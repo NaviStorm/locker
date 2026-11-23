@@ -3,9 +3,9 @@ import Foundation
 
 enum BlockCipher {
     static let chunk = 1024 * 1024
-    private static let overhead = 28 // GCM nonce and tag in CryptoKit combined representation
+    static let overhead = 28 // GCM nonce and tag in CryptoKit combined representation
 
-    private static func aad(_ id: UUID, _ position: UInt64) -> Data {
+    static func aad(_ id: UUID, _ position: UInt64) -> Data {
         Data("Locker-content-1/\(id.uuidString)/\(position)".utf8)
     }
 
@@ -63,6 +63,7 @@ enum BlockCipher {
 
     static func decrypt(id: UUID, info: Document, from url: URL, gate: SessionGate,
                         write: (Data) throws -> Void) throws {
+        guard info.key.count == 32, info.size >= 0 else { throw VaultError.damaged }
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
         let key = SymmetricKey(data: info.key)
@@ -88,7 +89,7 @@ enum BlockCipher {
         }
     }
 
-    private static func readExactly(_ count: Int, from handle: FileHandle) throws -> Data {
+    static func readExactly(_ count: Int, from handle: FileHandle) throws -> Data {
         var buffer = Data()
         while buffer.count < count {
             guard let part = try handle.read(upToCount: count - buffer.count), !part.isEmpty else {

@@ -9,7 +9,11 @@ struct CloudBucket: ObjectBucket {
     let directory: URL
 
     static func connect(vault: String, invitation: URL?, cache: URL) async throws -> CloudBucket {
-        let container = CKContainer.default()
+        guard let bundle = Bundle.main.bundleIdentifier else { throw VaultError.unavailable }
+        let container = CKContainer(identifier: "iCloud." + bundle)
+        guard try await container.accountStatus() == .available else {
+            throw TransportError(message: "Le compte ou le conteneur iCloud est indisponible. Les documents restent accessibles localement.")
+        }
         let zoneName = "LockerObjects-" + vault
         if let invitation {
             let meta = try await container.shareMetadata(for: invitation)

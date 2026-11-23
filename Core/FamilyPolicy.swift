@@ -24,6 +24,7 @@ struct Policy: Codable {
 
     static func issue(_ members: [Member], prior: PolicyCertificate?, by identity: DeviceIdentity) throws -> PolicyCertificate {
         let old = try prior?.decoded()
+        guard old?.epoch != UInt64.max else { throw FamilyError.policy }
         if let old { guard old.member(identity.card.fingerprint)?.role == .admin else { throw FamilyError.denied } }
         guard members.contains(where: { $0.role == .admin && $0.documents == nil }),
               Set(members.map(\.card.fingerprint)).count == members.count else { throw FamilyError.policy }
@@ -72,14 +73,22 @@ struct PolicyCertificate: Codable {
     }
 }
 
+struct TransportContact: Codable, Equatable {
+    let email: String
+    let destination: String
+}
+
 struct FamilyLocal: Codable {
     var tip: PolicyCertificate
     var waiting: [PolicyCertificate]
     var seen: Set<String>
     var principal: String
     var cloudURL: URL?
-    var contacts: [String: String]?
-    var removals: [String]?
+    var contacts: [String: TransportContact]?
+    var removals: [TransportContact]?
+    var history: [PolicyCertificate]?
+    var destination: String?
+    var bootstrap: Bool?
 }
 
 struct FamilyInvitation: Codable {
@@ -173,15 +182,22 @@ struct FamilyEvent: Codable {
         let body = try VaultStore.unpack(FamilyBody.self, data: event.ciphertext, keys: VaultKeys(secret: raw), purpose: "family-body")
         guard body.entry.id == event.document, (body.entry.document == nil) == (event.action == .delete),
               body.entry.document.map({ ($0.lineage ?? body.entry.id) == event.scope }) ?? true else { throw FamilyError.policy }
+        let birthAuthor = body.entry.document?.originAuthor ?? body.entry.tombstoneAuthor
+        let nonce = body.entry.document?.originNonce ?? body.entry.tombstoneNonce
+        if event.scope != event.document {
+            guard let birthAuthor, let nonce,
+                  scopedID(author: birthAuthor, nonce: nonce, lineage: event.scope) == event.document else { throw FamilyError.scope }
+        }
         if author.role == .contributor {
             guard let info = body.entry.document, let nonce = info.originNonce, body.entry.generation == 1,
-                  body.entry.id == scopedID(author: author.card.fingerprint, nonce: nonce) else { throw FamilyError.denied }
+                  birthAuthor == author.card.fingerprint,
+                  body.entry.id == scopedID(author: author.card.fingerprint, nonce: nonce, lineage: event.scope == event.document ? nil : event.scope) else { throw FamilyError.denied }
         }
         return (event, body)
     }
 
-    static func scopedID(author: String, nonce: UUID) -> UUID {
-        let digest = SHA256.hash(data: Data((author + nonce.uuidString).utf8))
+    static func scopedID(author: String, nonce: UUID, lineage: UUID? = nil) -> UUID {
+        let digest = SHA256.hash(data: Data((author + nonce.uuidString + (lineage?.uuidString ?? "")).utf8))
         return UUID(uuid: digest.withUnsafeBytes { $0.loadUnaligned(as: uuid_t.self) })
     }
 }

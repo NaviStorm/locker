@@ -12,6 +12,7 @@ struct Document: Codable, Equatable {
     var labels: Labels
     let key: Data
     let size: Int64
+    var originAuthor: String?
     var originNonce: UUID?
     var lineage: UUID?
     var parent: UUID?
@@ -25,6 +26,8 @@ struct Entry: Codable, Equatable {
     var revision: UUID
     var document: Document?
     var tombstoneScope: UUID?
+    var tombstoneAuthor: String?
+    var tombstoneNonce: UUID?
     var scope: UUID { document?.lineage ?? tombstoneScope ?? id }
 
     func mergingLabels(from other: Entry) -> Entry {
@@ -78,6 +81,10 @@ actor VaultStore {
             let bytes = try Self.pack(Catalog(entries: [:], pending: [:]), keys: keys, purpose: "catalog")
             try VaultFiles.save(bytes, to: catalog)
         }
+        var vaultDirectory = root
+        var attributes = URLResourceValues()
+        attributes.isExcludedFromBackup = true
+        try vaultDirectory.setResourceValues(attributes)
         let state = try Self.readCatalog(catalog, keys: keys)
         entries = state.entries
         pending = state.pending
@@ -169,15 +176,16 @@ actor VaultStore {
     private func add(name: String, parent: UUID? = nil, read: () throws -> Data) throws -> UUID {
         if let parent, entries[parent]?.document == nil { throw VaultError.unavailable }
         let nonce = UUID()
-        let id = family.map { FamilyEvent.scopedID(author: $0.principal, nonce: nonce) } ?? UUID()
-        let scope = parent.flatMap { entries[$0]?.scope } ?? id
+        let parentScope = parent.flatMap { entries[$0]?.scope }
+        let id = family.map { FamilyEvent.scopedID(author: $0.principal, nonce: nonce, lineage: parentScope) } ?? UUID()
+        let scope = parentScope ?? id
         try authorizeLocal(.add, scope: scope)
         let key = SymmetricKey(size: .bits256)
         let url = blob(id)
         let size = try BlockCipher.encrypt(id: id, key: key, to: url, gate: gate, read: read)
         do {
             let document = Document(labels: Labels(name: name), key: key.withUnsafeBytes { Data($0) }, size: size,
-                                    originNonce: nonce, lineage: scope,
+                                    originAuthor: family?.principal, originNonce: nonce, lineage: scope,
                                     parent: parent, created: Date())
             try replace(Entry(id: id, generation: 1, revision: UUID(), document: document))
             return id
@@ -197,7 +205,13 @@ actor VaultStore {
             document.previousLabels = previous
             document.labels = labels
             entry.document = document
-        } else { entry.tombstoneScope = entry.scope; entry.document = nil }
+        } else {
+            entry.tombstoneScope = entry.scope
+            entry.tombstoneAuthor = entry.document?.originAuthor
+            entry.tombstoneNonce = entry.document?.originNonce
+            entry.document = nil
+        }
+        guard entry.generation < UInt64.max else { throw VaultError.damaged }
         entry.generation += 1
         entry.revision = UUID()
         try replace(entry)
@@ -216,17 +230,17 @@ actor VaultStore {
     func export(_ id: UUID, to destination: URL) throws {
         try gate.check()
         guard let info = entries[id]?.document else { throw VaultError.unavailable }
-        let staging = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).partial")
-        let output = try VaultFiles.newFile(staging)
-        defer { try? output.close(); try? FileManager.default.removeItem(at: staging) }
-        try BlockCipher.decrypt(id: id, info: info, from: blob(id), gate: gate) { try output.write(contentsOf: $0) }
-        try output.synchronize()
-        try output.close()
-        try gate.authorized {
-            // Exclusive rename on Darwin prevents overwriting an existing export.
-            guard renamex_np(staging.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
+        let source = blob(id)
+        try BlockCipher.decrypt(id: id, info: info, from: source, gate: gate) { _ in }
+        let output = try gate.authorized { try VaultFiles.newFile(destination) }
+        do {
+            try BlockCipher.decrypt(id: id, info: info, from: source, gate: gate) { try output.write(contentsOf: $0) }
+            try output.synchronize()
+            try output.close()
+        } catch {
+            try? output.close()
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         }
     }
 

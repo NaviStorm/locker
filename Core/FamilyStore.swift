@@ -13,7 +13,7 @@ extension VaultStore {
         let owner = Member(card: device.card, role: .admin, documents: nil)
         let rescue = try Member(card: DeviceIdentity(rescue: keys).card, role: .admin, documents: nil)
         let tip = try Policy.issue([owner, rescue], prior: nil, by: device)
-        let state = FamilyLocal(tip: tip, waiting: [tip], seen: [], principal: device.card.fingerprint)
+        let state = FamilyLocal(tip: tip, waiting: [tip], seen: [], principal: device.card.fingerprint, history: [tip])
         try commit(entries, pending, family: state)
     }
 
@@ -48,6 +48,7 @@ extension VaultStore {
            state.contacts?.values.contains(email) != true {
             state.removals = (state.removals ?? []) + [email]
         }
+        state.history = (state.history ?? [state.tip]) + [next]
         state.tip = next
         state.waiting.append(next)
         state.seen = []
@@ -74,7 +75,13 @@ extension VaultStore {
         let removed = Set(entries.keys).subtracting(retained.keys)
         var queue = pending.filter { retained[$0.key] != nil }
         if grant?.role == .admin || grant?.role == .editor { queue = retained.mapValues(\.revision) }
+        if grant?.role == .contributor {
+            queue = queue.filter { id, _ in
+                retained[id]?.generation == 1 && retained[id]?.document?.originAuthor == state.principal
+            }
+        }
         if grant == nil || grant?.role == .reader { queue = [:] }
+        state.history = (state.history ?? [state.tip]) + [next]
         state.tip = next
         state.seen = []
         try commit(retained, queue, family: state)
@@ -86,8 +93,8 @@ extension VaultStore {
     func synchronizeFamily(bucket: ObjectBucket, identity: DeviceIdentity) async throws {
         try gate.check()
         try await synchronizePolicy(bucket)
-        try await finishProviderRemovals(bucket)
         guard let state = family, try state.tip.decoded().member(identity.card.fingerprint) != nil else { throw FamilyError.denied }
+        try await finishProviderRemovals(bucket)
         let digest = state.tip.digest
         let prefix = "e-" + digest + "-"
         let parts = try ObjectReplica(bucket: bucket, cache: root.appendingPathComponent("family-transfers"), gate: gate)
@@ -119,10 +126,28 @@ extension VaultStore {
             let signed = try FamilyEvent.make(body: body, scope: entry.scope, action: action, state: state, by: identity)
             // Immutable unique event names preserve both sides of concurrent edits.
             let name = prefix + UUID().uuidString.lowercased()
-            try await bucket.put(JSONEncoder().encode(signed), name: name, replacing: nil)
+            let encoded = try JSONEncoder().encode(signed)
+            try await bucket.put(encoded, name: name, replacing: nil)
+            if action == .delete {
+                try await redactHistory(of: id, scope: entry.scope, tombstone: encoded, bucket: bucket, epoch: digest)
+            }
             try checkEpoch(digest)
             try markSeen(name, epoch: digest)
             try acknowledge(id, revision: revision)
+        }
+    }
+
+    /// Remove historical key envelopes from the live namespace after a durable signed deletion.
+    /// Provider backups and ciphertext or keys already copied by a member remain outside this operation.
+    private func redactHistory(of id: UUID, scope: UUID, tombstone: Data, bucket: ObjectBucket, epoch: String) async throws {
+        for name in try await bucket.inventory().keys where name.hasPrefix("e-") {
+            try checkEpoch(epoch)
+            guard let value = try await bucket.get(name) else { continue }
+            let signed = try JSONDecoder().decode(SignedObject.self, from: value.data)
+            let event = try JSONDecoder().decode(FamilyEvent.self, from: signed.bytes)
+            if event.document == id, event.scope == scope, event.action != .delete {
+                try await bucket.put(tombstone, name: name, replacing: value.tag)
+            }
         }
     }
 
@@ -165,7 +190,18 @@ extension VaultStore {
             try value.map { try JSONDecoder().decode(PolicyCertificate.self, from: $0.data) }
         }
         var head = try decode(remote)
-        for next in initial.waiting {
+        var proposals = initial.waiting
+        if initial.bootstrap == true {
+            guard try initial.tip.decoded().member(initial.principal)?.role == .admin else { throw FamilyError.denied }
+            let chain = initial.history ?? proposals
+            guard try chain.first?.decoded().epoch == 1 else {
+                throw TransportError(message: "La migration vers un fournisseur vide exige l’historique du propriétaire.")
+            }
+            if let head, let index = chain.firstIndex(where: { $0.digest == head.digest }) {
+                proposals = Array(chain.dropFirst(index + 1))
+            } else if head == nil { proposals = chain }
+        }
+        for next in proposals {
             try checkEpoch(initial.tip.digest)
             if head?.digest != next.digest {
                 let child = try next.decoded()
@@ -187,6 +223,10 @@ extension VaultStore {
             try commit(entries, pending, family: state)
         }
         guard let head else { throw FamilyError.stale }
+        if var state = family, state.bootstrap == true, state.tip.digest == initial.tip.digest {
+            state.bootstrap = false
+            try commit(entries, pending, family: state)
+        }
         guard head.digest != initial.tip.digest else { return }
         let pinned = try initial.tip.decoded()
         var cursor = head
@@ -195,7 +235,7 @@ extension VaultStore {
             try checkEpoch(initial.tip.digest)
             let current = try cursor.decoded()
             guard current.vault == pinned.vault, current.epoch > pinned.epoch, let parent = current.parent,
-                  parent.count == 64, chain.count < 4096 else { throw FamilyError.stale }
+                  parent.count == 64, parent.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }), chain.count < 4096 else { throw FamilyError.stale }
             chain.append(cursor)
             if parent == initial.tip.digest { break }
             guard let object = try await bucket.get("p-" + parent), let previous = try decode(object),

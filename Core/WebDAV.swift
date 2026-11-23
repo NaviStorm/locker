@@ -28,8 +28,11 @@ private final class DAVListing: NSObject, XMLParserDelegate {
 struct WebDAVBucket: ObjectBucket {
     let root: URL
     private let auth: String
+    private let exchange: HTTPExchange
 
-    init(server: String, user: String, password: String, vault: String) throws {
+    init(server: String, user: String, password: String, vault: String,
+         exchange: @escaping HTTPExchange = { try await Network.send($0) }) throws {
+        self.exchange = exchange
         guard let base = URL(string: server), base.scheme?.lowercased() == "https", base.host != nil,
               base.user == nil, base.password == nil, base.query == nil, base.fragment == nil,
               !user.contains(":") else { throw TransportError(message: "Indiquez un dossier WebDAV HTTPS valide.") }
@@ -49,11 +52,11 @@ struct WebDAVBucket: ObjectBucket {
         query.setValue("1", forHTTPHeaderField: "Depth")
         query.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         query.httpBody = Data(#"<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"#.utf8)
-        var (data, response) = try await Network.send(query)
+        var (data, response) = try await exchange(query)
         if response.statusCode == 404 {
-            let (_, create) = try await Network.send(request("MKCOL"))
+            let (_, create) = try await exchange(request("MKCOL"))
             if create.statusCode != 405 { try Network.check(create) }
-            (data, response) = try await Network.send(query)
+            (data, response) = try await exchange(query)
         }
         try Network.check(response)
         let listing = DAVListing()
@@ -66,7 +69,7 @@ struct WebDAVBucket: ObjectBucket {
     }
 
     func get(_ name: String) async throws -> BucketValue? {
-        let (data, response) = try await Network.send(request("GET", name))
+        let (data, response) = try await exchange(request("GET", name))
         if response.statusCode == 404 { return nil }
         try Network.check(response)
         guard let tag = response.value(forHTTPHeaderField: "ETag"), tag.hasPrefix("\""), tag.hasSuffix("\"") else {
@@ -79,7 +82,7 @@ struct WebDAVBucket: ObjectBucket {
         var upload = request("PUT", name)
         upload.setValue(tag ?? "*", forHTTPHeaderField: tag == nil ? "If-None-Match" : "If-Match")
         upload.httpBody = bytes
-        let (_, response) = try await Network.send(upload)
+        let (_, response) = try await exchange(upload)
         if response.statusCode == 412 { throw ReplicaError.conflict }
         try Network.check(response)
     }

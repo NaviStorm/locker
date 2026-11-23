@@ -67,7 +67,7 @@ final class QueueTests: VaultTestCase {
         XCTAssertThrowsError(try WebDAVBucket(server: "http://nas.local", user: "test", password: "fictif", vault: "1"))
         let oauth = DropboxAuthorization(client: "fictif")
         XCTAssertTrue(oauth.startURL.absoluteString.contains("code_challenge_method=S256"))
-        do { _ = try await oauth.finish(callback: URL(string: "locker-vault://oauth/dropbox?code=x&state=wrong")!); XCTFail() }
+        do { _ = try await oauth.finish(callback: URL(string: "db-fictif://2/token?code=x&state=wrong")!); XCTFail() }
         catch {}
     }
 }

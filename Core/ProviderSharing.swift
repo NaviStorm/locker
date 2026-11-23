@@ -22,18 +22,19 @@ extension DropboxBucket {
         let metadata = try await send("get_metadata", ["path": folder])
         try Network.check(metadata.1)
         let info = try JSONSerialization.jsonObject(with: metadata.0) as? [String: Any]
+        if let id = info?["shared_folder_id"] as? String { return id }
         if let sharing = info?["sharing_info"] as? [String: Any], let id = sharing["shared_folder_id"] as? String { return id }
         var result = try await send("share_folder", ["path": folder, "force_async": false], sharing: true)
+        var job: String?
         for _ in 0..<30 {
             try Network.check(result.1)
             let object = try JSONSerialization.jsonObject(with: result.0) as? [String: Any]
             if let id = object?["shared_folder_id"] as? String { return id }
-            guard let job = object?["async_job_id"] as? String else { throw FamilyError.policy }
-            repeat {
-                try await Task.sleep(for: .seconds(1))
-                result = try await send("check_share_job_status", ["async_job_id": job], sharing: true)
-                try Network.check(result.1)
-            } while (try JSONSerialization.jsonObject(with: result.0) as? [String: Any])?[".tag"] as? String == "in_progress"
+            if let completed = object?["complete"] as? [String: Any], let id = completed["shared_folder_id"] as? String { return id }
+            if let next = object?["async_job_id"] as? String { job = next }
+            guard let job, object?[".tag"] as? String != "failed" else { throw FamilyError.policy }
+            try await Task.sleep(for: .seconds(1))
+            result = try await send("check_share_job_status", ["async_job_id": job], sharing: true)
         }
         throw VaultError.changed
     }
@@ -87,7 +88,7 @@ extension VaultStore {
         state.cloudURL = route
         if !email.isEmpty {
             var contacts = state.contacts ?? [:]
-            contacts[card.fingerprint] = email
+            contacts[card.fingerprint] = TransportContact(email: email, destination: config.destination)
             state.contacts = contacts
         }
         try commit(entries, pending, family: state)
@@ -95,12 +96,14 @@ extension VaultStore {
     }
 
     func finishProviderRemovals(_ bucket: ObjectBucket) async throws {
-        for email in family?.removals ?? [] {
+        let destination = try settings().destination
+        for contact in family?.removals ?? [] where contact.destination == destination {
+            let email = contact.email
             try gate.check()
             if let cloud = bucket as? CloudBucket { try await cloud.revoke(email: email) }
             if let dropbox = bucket as? DropboxBucket { try await dropbox.revoke(email: email) }
             guard var state = family else { throw FamilyError.policy }
-            state.removals?.removeAll { $0 == email }
+            state.removals?.removeAll { $0 == contact }
             try commit(entries, pending, family: state)
         }
     }

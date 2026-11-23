@@ -5,7 +5,8 @@ struct DropboxAuthorization {
     let client: String
     let verifier = Self.url64(SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) })
     let state = UUID().uuidString
-    static let redirect = "locker-vault://oauth/dropbox"
+    var scheme: String { "db-" + client }
+    var redirect: String { scheme + "://2/token" }
 
     private static func url64(_ data: Data) -> String {
         data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
@@ -16,7 +17,7 @@ struct DropboxAuthorization {
         var url = URLComponents(string: "https://www.dropbox.com/oauth2/authorize")!
         url.queryItems = [
             URLQueryItem(name: "client_id", value: client), URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "state", value: state), URLQueryItem(name: "redirect_uri", value: Self.redirect),
+            URLQueryItem(name: "state", value: state), URLQueryItem(name: "redirect_uri", value: redirect),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "code_challenge", value: Self.url64(Data(SHA256.hash(data: Data(verifier.utf8))))),
             URLQueryItem(name: "token_access_type", value: "offline")
@@ -26,13 +27,13 @@ struct DropboxAuthorization {
 
     func finish(callback: URL) async throws -> String {
         guard let parts = URLComponents(url: callback, resolvingAgainstBaseURL: false),
-              parts.scheme == "locker-vault", parts.host == "oauth", parts.path == "/dropbox",
+              parts.scheme == scheme, parts.host == "2", parts.path == "/token",
               parts.queryItems?.first(where: { $0.name == "state" })?.value == state,
               let code = parts.queryItems?.first(where: { $0.name == "code" })?.value else {
             throw TransportError(message: "La réponse d’autorisation Dropbox est invalide.")
         }
         let token = try await Self.token(["client_id": client, "grant_type": "authorization_code", "code": code,
-                                          "code_verifier": verifier, "redirect_uri": Self.redirect])
+                                          "code_verifier": verifier, "redirect_uri": redirect])
         guard let refresh = token["refresh_token"] as? String else { throw VaultError.unavailable }
         return refresh
     }
@@ -57,8 +58,14 @@ actor DropboxBucket: ObjectBucket {
     private let refresh: String
     let folder: String
     private var bearer: String?
+    private let exchange: HTTPExchange
+    private let renew: ([String: String]) async throws -> [String: Any]
 
-    init(client: String, refresh: String, folder: String) {
+    init(client: String, refresh: String, folder: String,
+         exchange: @escaping HTTPExchange = { try await Network.send($0) },
+         renew: @escaping ([String: String]) async throws -> [String: Any] = DropboxAuthorization.token) {
+        self.exchange = exchange
+        self.renew = renew
         self.client = client
         self.refresh = refresh
         self.folder = folder
@@ -68,7 +75,7 @@ actor DropboxBucket: ObjectBucket {
                       content: Bool = false, sharing: Bool = false) async throws -> (Data, HTTPURLResponse) {
         for _ in 0..<2 {
             if bearer == nil {
-                let response = try await DropboxAuthorization.token(["client_id": client, "refresh_token": refresh,
+                let response = try await renew(["client_id": client, "refresh_token": refresh,
                                                                     "grant_type": "refresh_token"])
                 guard let token = response["access_token"] as? String else { throw VaultError.unavailable }
                 bearer = token
@@ -89,7 +96,7 @@ actor DropboxBucket: ObjectBucket {
                 request.httpBody = json
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             }
-            let result = try await Network.send(request)
+            let result = try await exchange(request)
             if result.1.statusCode != 401 { return result }
             bearer = nil
         }

@@ -15,7 +15,9 @@ struct SettingsScreen: View {
     @State private var rotate = false
     init(model: LockerModel) {
         self.model = model
-        _draft = State(initialValue: model.configuration)
+        var config = model.configuration
+        if config.appKey.isEmpty { config.appKey = Bundle.main.object(forInfoDictionaryKey: "LockerDropboxKey") as? String ?? "" }
+        _draft = State(initialValue: config)
     }
 
     var body: some View {
@@ -32,8 +34,10 @@ struct SettingsScreen: View {
                         }
                     }
                     Button("Partage familial") { family = true }
-                    Button("Renouveler mon coffre personnel…") { rotate = true }
-                    Button("Mes appareils") { sharing = true }
+                    if !model.familyMode {
+                        Button("Renouveler mon coffre personnel…") { rotate = true }
+                        Button("Mes appareils") { sharing = true }
+                    }
                 }
                 Section("Synchronisation de ce coffre") {
                     Picker("Fournisseur", selection: $draft.provider) {
@@ -78,14 +82,20 @@ struct SettingsScreen: View {
         Task {
             defer { busy = false }
             do {
-                let credential: String?
-                if draft.provider == .dropbox {
+                let config = draft
+                if config.provider == .dropbox {
+                    guard !config.appKey.isEmpty, config.appKey == Bundle.main.object(forInfoDictionaryKey: "LockerDropboxKey") as? String else {
+                        throw TransportError(message: "Renseignez DROPBOX_APP_KEY dans les réglages de compilation de Locker, puis recompilez.")
+                    }
+                    let handoff = try await model.prepareOAuth()
                     let oauth = DropboxAuthorization(client: draft.appKey)
-                    let callback = try await webSession.authenticate(using: oauth.startURL, callbackURLScheme: "locker-vault",
+                    let callback = try await webSession.authenticate(using: oauth.startURL, callbackURLScheme: oauth.scheme,
                                                                       preferredBrowserSession: .ephemeral)
-                    credential = try await oauth.finish(callback: callback)
-                } else { credential = draft.provider == .webdav && !password.isEmpty ? password : nil }
-                try await model.configure(draft, credential: credential)
+                    let refresh = try await oauth.finish(callback: callback)
+                    try await model.finishOAuth(handoff, config: config, refresh: refresh)
+                } else {
+                    try await model.configure(config, credential: config.provider == .webdav && !password.isEmpty ? password : nil)
+                }
                 password = ""
             } catch { errorText = error.localizedDescription }
         }

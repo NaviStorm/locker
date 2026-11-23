@@ -12,6 +12,10 @@ struct ProviderSettings: Codable, Equatable {
     var username = ""
     var appKey = ""
     var sharedFolder = ""
+    var destination: String {
+        let fields = [provider.rawValue, endpoint, sharedFolder]
+        return (try? JSONEncoder().encode(fields).base64EncodedString()) ?? ""
+    }
 }
 
 extension VaultStore {
@@ -31,9 +35,22 @@ extension VaultStore {
             let data = try Self.pack(credential, keys: keys, purpose: "provider/" + config.provider.rawValue)
             try ProviderCredential(account: credentialAccount(config)).save(data)
         }
-        if try settings() != config {
+        if credential == nil && [.dropbox, .webdav].contains(config.provider) {
+            _ = try ProviderCredential(account: credentialAccount(config)).read()
+        }
+        if (try? settings()) != config {
             let oldCursor = root.appendingPathComponent("remote-tags.v1")
             if FileManager.default.fileExists(atPath: oldCursor.path) { try FileManager.default.removeItem(at: oldCursor) }
+        }
+        if var state = family, config.provider != .local {
+            let destination = config.destination
+            if state.destination != destination {
+                state.bootstrap = state.destination != nil && (try? state.tip.decoded().member(state.principal)?.role) == .admin
+                state.destination = destination
+                state.seen = []
+                let queue = state.bootstrap == true ? entries.mapValues(\.revision) : pending
+                try commit(entries, queue, family: state)
+            }
         }
         let data = try Self.pack(config, keys: keys, purpose: "transport")
         try gate.authorized { try VaultFiles.save(data, to: root.appendingPathComponent("transport.v1")) }
@@ -54,6 +71,12 @@ extension VaultStore {
         } else {
             let replica = try ObjectReplica(bucket: bucket, cache: root.appendingPathComponent("transfers"), gate: gate)
             try await synchronize(with: replica)
+        }
+        try gate.authorized {
+            for directory in ["transfers", "family-transfers"] {
+                let cache = root.appendingPathComponent(directory)
+                if FileManager.default.fileExists(atPath: cache.path) { try FileManager.default.removeItem(at: cache) }
+            }
         }
     }
 

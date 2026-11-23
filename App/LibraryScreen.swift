@@ -45,7 +45,7 @@ struct LibraryScreen: View {
                 }
             }
             .searchable(text: $query, prompt: "Rechercher dans le coffre")
-            .navigationTitle("Documents")
+            .navigationTitle(model.familyMode ? "Coffre familial" : "Coffre personnel")
             .toolbar {
                 ToolbarItemGroup {
                     Menu {

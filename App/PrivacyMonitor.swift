@@ -30,7 +30,7 @@ struct PrivacyMonitor: UIViewRepresentable {
         @objc private func typeEvent() { activity() }
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            recognizer?.view?.removeGestureRecognizer(recognizer!)
+            if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
             guard let window else { return }
             let tap = ActivityGesture()
             tap.activity = activity

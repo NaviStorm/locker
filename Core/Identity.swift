@@ -28,7 +28,7 @@ struct PublicIdentity: Codable, Equatable {
 
     func verify(_ signature: Data, bytes: Data) throws {
         let key = try P256.Signing.PublicKey(x963Representation: signing)
-        guard try key.isValidSignature(P256.Signing.ECDSASignature(derRepresentation: signature), for: bytes)
+        guard try key.isValidSignature(P256.Signing.ECDSASignature(rawRepresentation: signature), for: bytes)
         else { throw VaultError.damaged }
     }
 }
@@ -74,8 +74,8 @@ struct DeviceIdentity: Codable {
     }
 
     func sign(_ data: Data) throws -> Data {
-        if hardware { return try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: signing).signature(for: data).derRepresentation }
-        return try P256.Signing.PrivateKey(rawRepresentation: signing).signature(for: data).derRepresentation
+        if hardware { return try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: signing).signature(for: data).rawRepresentation }
+        return try P256.Signing.PrivateKey(rawRepresentation: signing).signature(for: data).rawRepresentation
     }
 
     func decrypt(_ envelope: SealedGrant) throws -> Data {
@@ -104,17 +104,60 @@ struct SealedGrant: Codable {
     }
 }
 
+/// RFC 7515 flattened JWS serialization, with a protected application type and ES256.
 struct SignedObject: Codable {
+    private struct Header: Codable {
+        let alg: String
+        let typ: String
+    }
+    private enum CodingKeys: String, CodingKey { case protected, payload, signature }
     let bytes: Data
-    let signature: Data
+    private let protected: String
+    private let signature: Data
+
+    private static func encode64(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func decode64(_ string: String) throws -> Data {
+        var base = string.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        base += String(repeating: "=", count: (4 - base.utf8.count % 4) % 4)
+        guard let data = Data(base64Encoded: base), encode64(data) == string else { throw VaultError.damaged }
+        return data
+    }
+
+    private static func input(_ header: String, bytes: Data) -> Data {
+        Data((header + "." + encode64(bytes)).utf8)
+    }
 
     init<T: Encodable>(_ payload: T, by identity: DeviceIdentity, domain: String) throws {
         bytes = try JSONEncoder().encode(payload)
-        signature = try identity.sign(Data((domain + "\0").utf8) + bytes)
+        protected = try Self.encode64(JSONEncoder().encode(Header(alg: "ES256", typ: domain)))
+        signature = try identity.sign(Self.input(protected, bytes: bytes))
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        protected = try values.decode(String.self, forKey: .protected)
+        bytes = try Self.decode64(values.decode(String.self, forKey: .payload))
+        signature = try Self.decode64(values.decode(String.self, forKey: .signature))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(protected, forKey: .protected)
+        try values.encode(Self.encode64(bytes), forKey: .payload)
+        try values.encode(Self.encode64(signature), forKey: .signature)
     }
 
     func verified<T: Decodable>(_ type: T.Type, by card: PublicIdentity, domain: String) throws -> T {
-        try card.verify(signature, bytes: Data((domain + "\0").utf8) + bytes)
+        let rawHeader = try Self.decode64(protected)
+        guard let fields = try JSONSerialization.jsonObject(with: rawHeader) as? [String: String],
+              Set(fields.keys) == ["alg", "typ"] else { throw VaultError.damaged }
+        let header = try JSONDecoder().decode(Header.self, from: rawHeader)
+        guard header.alg == "ES256", header.typ == domain, signature.count == 64 else { throw VaultError.damaged }
+        try card.verify(signature, bytes: Self.input(protected, bytes: bytes))
         return try JSONDecoder().decode(type, from: bytes)
     }
 }

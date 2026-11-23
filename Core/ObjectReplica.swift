@@ -71,6 +71,7 @@ actor ObjectReplica: VaultReplica {
         defer { try? output.close() }
         for chunk in chunks {
             try gate.check()
+            try Task.checkCancellation()
             guard chunk.count == 64, chunk.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
                 throw VaultError.damaged
             }
@@ -104,6 +105,7 @@ actor ObjectReplica: VaultReplica {
             defer { try? input.close() }
             while let part = try input.read(upToCount: Self.segmentSize), !part.isEmpty {
                 try gate.check()
+                try Task.checkCancellation()
                 let hash = digest(part)
                 let name = "b-" + hash
                 if known[name] == nil {

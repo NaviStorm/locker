@@ -1,5 +1,7 @@
 import Foundation
 
+typealias HTTPExchange = (URLRequest) async throws -> (Data, HTTPURLResponse)
+
 struct TransportError: LocalizedError {
     let message: String
     var errorDescription: String? { message }

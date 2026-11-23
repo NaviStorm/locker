@@ -12,6 +12,7 @@ struct FamilyScreen: View {
     @State private var restricted = false
     @State private var chosen = Set<UUID>()
     @State private var email = ""
+    @State private var existingAccess = false
     @State private var received = ""
     @State private var issued = ""
     @State private var problem = ""
@@ -21,6 +22,10 @@ struct FamilyScreen: View {
     @State private var rescue = ""
     @State private var kit = ""
     private var peer: PublicIdentity? { try? PublicIdentity(card: remoteCard) }
+    private var lineages: [ListedDocument] {
+        var seen = Set<UUID>()
+        return model.documents.filter { seen.insert($0.lineage).inserted }
+    }
     private var isAdmin: Bool { members.contains { $0.card.fingerprint == principal && $0.role == .admin } }
 
     var body: some View {
@@ -72,7 +77,7 @@ struct FamilyScreen: View {
                             if role != .admin {
                                 Toggle("Limiter à certains documents", isOn: $restricted)
                                 if restricted {
-                                    ForEach(model.documents.filter { $0.id == $0.lineage }) { row in
+                                    ForEach(lineages) { row in
                                         Toggle(row.labels.name, isOn: Binding(get: { chosen.contains(row.lineage) }, set: {
                                             if $0 { chosen.insert(row.lineage) } else { chosen.remove(row.lineage) }
                                         }))
@@ -80,14 +85,16 @@ struct FamilyScreen: View {
                                 }
                             }
                             if [.cloud, .dropbox].contains(model.configuration.provider) {
-                                TextField("Adresse du compte du destinataire", text: $email)
+                                Toggle("Le destinataire a déjà accès au dossier ou à la zone", isOn: $existingAccess)
+                                if !existingAccess { TextField("Adresse du compte du destinataire", text: $email) }
                             }
                             Button("Autoriser et préparer l’invitation") {
                                 guard let peer else { return }
                                 run { store in
                                     let scope = restricted && role != .admin ? chosen : nil
                                     try await store.changeMembership(card: peer, role: role, scope: scope)
-                                    issued = try await store.issueTicket(to: peer, email: email)
+                                    if existingAccess { issued = try await store.familyTicket(for: peer) }
+                                    else { issued = try await store.issueTicket(to: peer, email: email) }
                                 }
                             }.disabled(!verified || peer == nil || (restricted && role != .admin && chosen.isEmpty))
                             if !issued.isEmpty { ShareLink("Transmettre l’invitation chiffrée", item: issued) }
@@ -132,6 +139,7 @@ struct FamilyScreen: View {
         mine = try await store.publicIdentity()
         principal = await store.family?.principal ?? ""
         members = try await store.members()
+        model.familyMode = !members.isEmpty
     }
 
     private func run(_ operation: @escaping (VaultStore) async throws -> Void) {

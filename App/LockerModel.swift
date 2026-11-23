@@ -8,6 +8,7 @@ final class LockerModel {
     var slots: [String] = []
     var slot = ""
     var store: VaultStore?
+    var familyMode = false
     var documents: [ListedDocument] = []
     var opening = false
     var repairSelected = false
@@ -44,10 +45,10 @@ final class LockerModel {
     }
 
     func activity() { lastActivity = .now }
-    func tick() {
+    func tick(at now: ContinuousClock.Instant = .now) {
         guard store != nil else { return }
-        if lastActivity.duration(to: .now) >= .seconds(timeout) { lock(); return }
-        if ContinuousClock.now >= nextSync { sync() }
+        if lastActivity.duration(to: now) >= .seconds(timeout) { lock(); return }
+        if now >= nextSync { sync() }
     }
 
     func lock() {
@@ -58,6 +59,7 @@ final class LockerModel {
         syncTask = nil
         accessGate = nil
         store = nil
+        familyMode = false
         documents = []
         opening = false
         syncing = false
@@ -90,7 +92,14 @@ final class LockerModel {
                     try VaultAccess.open(mode, at: root, device: device, context: auth, gate: gate)
                 }.value
                 let list = try await session.list()
-                let config = try await session.settings()
+                let shared = await session.family != nil
+                let config: ProviderSettings
+                var transportIssue: String?
+                do { try await session.resumeDropboxAuthorization(); config = try await session.settings() }
+                catch {
+                    config = ProviderSettings()
+                    transportIssue = "Les réglages de synchronisation sont illisibles. Le coffre est ouvert en mode local."
+                }
                 let code: String?
                 if case .create = mode { code = try await session.recoveryCode() } else { code = nil }
                 try gate.check()
@@ -98,8 +107,10 @@ final class LockerModel {
                 if !slots.contains(selected) { slots.append(selected) }
                 documents = list
                 configuration = config
+                problem = transportIssue
                 recovery = code
                 store = session
+                familyMode = shared
                 activity()
                 sync()
             } catch { if accessGate === gate { problem = error.localizedDescription } }
@@ -133,11 +144,33 @@ final class LockerModel {
                 syncStatus = "À jour · " + Date.now.formatted(date: .omitted, time: .shortened)
             } catch {
                 guard store === session, !Task.isCancelled else { return }
+                let refreshed = try? await session.list()
+                guard store === session, !Task.isCancelled else { return }
+                if let refreshed { documents = refreshed }
                 syncStatus = "\(provider.rawValue) en attente · \(error.localizedDescription)"
             }
             syncing = false
             nextSync = .now.advanced(by: .seconds(30))
         }
+    }
+
+    func prepareOAuth() async throws -> OAuthHandoff {
+        guard let session = store else { throw VaultError.locked }
+        let card = try await session.publicIdentity()
+        try session.gate.check()
+        return OAuthHandoff(slot: slot, recipient: card)
+    }
+
+    func finishOAuth(_ handoff: OAuthHandoff, config: ProviderSettings, refresh: String) async throws {
+        try handoff.finish(config: config, refresh: refresh)
+        guard slot == handoff.slot, let session = store else { return }
+        syncTask?.cancel()
+        await syncTask?.value
+        try await session.resumeDropboxAuthorization()
+        try session.gate.check()
+        configuration = config
+        syncing = false
+        sync()
     }
 
     func configure(_ config: ProviderSettings, credential: String?) async throws {

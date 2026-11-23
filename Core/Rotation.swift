@@ -34,16 +34,19 @@ extension VaultStore {
         do {
             for (id, old) in entries {
                 guard let info = old.document else { continue }
-                let target = UUID()
+                let nonce = UUID()
+                let target = FamilyEvent.scopedID(author: state.principal, nonce: nonce, lineage: old.scope)
                 let ciphertext = blob(target)
                 let newKey = SymmetricKey(size: .bits256)
                 try BlockCipher.reencrypt(id: id, info: info, source: blob(id), as: target,
                                           using: newKey, to: ciphertext, gate: gate)
                 staged.append(ciphertext)
                 let replacement = Document(labels: info.labels, key: newKey.withUnsafeBytes { Data($0) }, size: info.size,
-                    lineage: old.scope, parent: id, created: info.created, previousLabels: info.previousLabels)
+                    originAuthor: state.principal, originNonce: nonce, lineage: old.scope, parent: id, created: info.created, previousLabels: info.previousLabels)
                 updated[target] = Entry(id: target, generation: 1, revision: UUID(), document: replacement)
-                updated[id] = Entry(id: id, generation: old.generation + 1, revision: UUID(), document: nil, tombstoneScope: old.scope)
+                guard old.generation < UInt64.max else { throw VaultError.damaged }
+                updated[id] = Entry(id: id, generation: old.generation + 1, revision: UUID(), document: nil, tombstoneScope: old.scope,
+                                    tombstoneAuthor: info.originAuthor, tombstoneNonce: info.originNonce)
                 retired.append(blob(id))
             }
             try commit(updated, updated.mapValues(\.revision), family: state)
@@ -75,7 +78,7 @@ extension VaultStore {
         try BlockCipher.reencrypt(id: entry.id, info: info, source: url, as: entry.id, using: key, to: dest, gate: sourceGate)
         var updated = entry
         updated.document = Document(labels: info.labels, key: key.withUnsafeBytes { Data($0) }, size: info.size,
-            originNonce: info.originNonce, lineage: info.lineage, parent: info.parent, created: info.created,
+            originAuthor: info.originAuthor, originNonce: info.originNonce, lineage: info.lineage, parent: info.parent, created: info.created,
             previousLabels: info.previousLabels)
         do { try replace(updated) }
         catch { try? FileManager.default.removeItem(at: dest); throw error }

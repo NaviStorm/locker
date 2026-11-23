@@ -46,7 +46,13 @@ struct RootScreen: View {
                             Toggle("Réparer le coffre sélectionné", isOn: $model.repairSelected)
                         }
                     } else {
-                        Button("Créer un coffre") { model.open(.create, newSlot: true) }
+                        if model.slots.isEmpty {
+                            if #available(iOS 26, macOS 26, *) {
+                                Button("Créer un coffre") { model.open(.create, newSlot: true) }.buttonStyle(.glassProminent)
+                            } else {
+                                Button("Créer un coffre") { model.open(.create, newSlot: true) }.buttonStyle(.borderedProminent)
+                            }
+                        } else { Button("Créer un coffre") { model.open(.create, newSlot: true) } }
                         Button("Utiliser un code de récupération") { recovering = true }
                     }
                     if model.opening { ProgressView("Authentification…") }

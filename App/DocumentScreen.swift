@@ -9,6 +9,7 @@ struct DocumentScreen: View {
     let addVersion: () -> Void
     let remove: () -> Void
     @State private var bytes: Data?
+    @State private var pdf: PagedPDF?
     @State private var notice = ""
     @State private var editing = false
     @State private var exporting = false
@@ -17,7 +18,8 @@ struct DocumentScreen: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if let bytes {
+            if let pdf { LargePDFScreen(pdf: pdf) }
+            else if let bytes {
                 DocumentPreview(data: bytes, name: item.labels.name)
             } else if notice.isEmpty { ProgressView() }
             else { ContentUnavailableView("Aperçu indisponible", systemImage: "doc", description: Text(notice)) }
@@ -49,6 +51,12 @@ struct DocumentScreen: View {
         .task(id: item.id) {
             guard let store = model.store else { return }
             do {
+                if item.size > 32 * 1024 * 1024, (item.labels.name as NSString).pathExtension.lowercased() == "pdf" {
+                    let paged = try await store.pagedPDF(item.id)
+                    try store.gate.check()
+                    pdf = paged
+                    return
+                }
                 let loaded = try await store.preview(item.id)
                 try store.gate.check()
                 bytes = loaded
