@@ -17,10 +17,13 @@ struct LibraryScreen: View {
     @State private var documentName = ""
     @State private var pendingDelete: ListedDocument?
 
+    private var folderDocuments: [ListedDocument] { model.library.documents(in: folder) }
+    private var selectedDocument: ListedDocument? { folderDocuments.first { $0.id == selection } }
+
     private var filtered: [ListedDocument] {
-        model.documents.filter { row in
+        folderDocuments.filter { row in
             let labels = row.labels
-            return (folder.isEmpty || folder == labels.folder) && (category.isEmpty || category == labels.category)
+            return (category.isEmpty || category == labels.category)
                 && (query.isEmpty || [labels.name, labels.category, labels.folder, labels.notes]
                     .contains { $0.localizedStandardContains(query) })
         }
@@ -60,21 +63,28 @@ struct LibraryScreen: View {
                                            systemImage: query.isEmpty ? "folder" : "magnifyingglass")
                 }
             }
-            .searchable(text: $query, prompt: "Rechercher dans le coffre")
+            .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
             .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
-            .onChange(of: folder) { selection = nil }
+            .onChange(of: folder) { category = ""; query = "" }
+            .onChange(of: selectedDocument?.id) { _, id in
+                if id == nil { selection = nil }
+            }
             .toolbar {
+                if folder.isEmpty {
+                    ToolbarItem(placement: .navigation) {
+                        Button("Nouveau dossier", systemImage: "folder.badge.plus") {
+                            folderName = ""
+                            creatingFolder = true
+                        }
+                        .labelStyle(.iconOnly)
+                        .help("Nouveau dossier")
+                    }
+                }
                 ToolbarItemGroup {
                     if !folder.isEmpty {
                         Button("Retour au coffre", systemImage: "chevron.backward") { folder = "" }
                     }
                     Menu {
-                        if folder.isEmpty {
-                            Button("Nouveau dossier", systemImage: "folder.badge.plus") {
-                                folderName = ""
-                                creatingFolder = true
-                            }
-                        }
                         Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }
                         #if os(iOS)
                         if ScanScreen.supported { Button("Numériser", systemImage: "document.viewfinder") { scanner = true } }
@@ -84,12 +94,12 @@ struct LibraryScreen: View {
                     } label: { Label("Ajouter", systemImage: "plus") }
                     Menu {
                         Picker("Dossier", selection: $folder) {
-                            Text("Tous les dossiers").tag("")
+                            Text("Racine du coffre").tag("")
                             ForEach(model.library.folders, id: \.self) { Text($0).tag($0) }
                         }
                         Picker("Catégorie", selection: $category) {
                             Text("Toutes les catégories").tag("")
-                            ForEach(Array(Set(model.documents.map(\.labels.category))).filter { !$0.isEmpty }.sorted(), id: \.self) { Text($0).tag($0) }
+                            ForEach(Array(Set(folderDocuments.map(\.labels.category))).filter { !$0.isEmpty }.sorted(), id: \.self) { Text($0).tag($0) }
                         }
                     } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
                     Menu {
@@ -99,8 +109,8 @@ struct LibraryScreen: View {
                 }
             }
         } detail: {
-            if let item = model.documents.first(where: { $0.id == selection }) {
-                DocumentScreen(model: model, item: item, select: { selection = $0 }, addVersion: {
+            if let item = selectedDocument {
+                DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
                     versionParent = item.id
                     importer = true
                 }, actions: documentActions(for: item)).id(item.id)
@@ -194,10 +204,16 @@ struct LibraryScreen: View {
         Button("Supprimer…", systemImage: "trash", role: .destructive) { pendingDelete = item }
     }
 
+    private func selectVersion(_ id: UUID) {
+        guard let version = model.documents.first(where: { $0.id == id }) else { return }
+        folder = version.labels.folder
+        selection = id
+    }
+
     private func move(_ item: ListedDocument, to destination: String) {
         model.perform { store in
             try await store.moveDocument(item.id, to: destination)
-            if selection == item.id && !folder.isEmpty && folder != destination { selection = nil }
+            if selection == item.id && folder != destination { selection = nil }
         }
     }
 }

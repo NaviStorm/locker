@@ -145,6 +145,31 @@ final class SyncTests: VaultTestCase {
         XCTAssertEqual(final, remaining)
     }
 
+    func testFolderContentsExcludeDocumentsFiledElsewhere() async throws {
+        let root = location("classement")
+        let keys = VaultKeys()
+        let store = try VaultStore(root: root, keys: keys, create: true)
+        let archives = try await store.createFolder("Archives")
+        let factures = try await store.createFolder("Factures")
+        let loose = try await store.importData(Data([1]), name: "libre.txt")
+        let filed = try await store.importData(Data([2]), name: "classé.txt", folder: archives)
+        var library = try await store.library()
+        XCTAssertEqual(library.documents(in: "").map(\.id), [loose])
+        XCTAssertEqual(library.documents(in: archives).map(\.id), [filed])
+        XCTAssertTrue(library.documents(in: factures).isEmpty)
+        try await store.moveDocument(loose, to: archives)
+        try await store.moveDocument(filed, to: factures)
+        let reopened = try VaultStore(root: root, keys: keys)
+        library = try await reopened.library()
+        XCTAssertTrue(library.documents(in: "").isEmpty)
+        XCTAssertEqual(library.documents(in: archives).map(\.id), [loose])
+        XCTAssertEqual(library.documents(in: factures).map(\.id), [filed])
+        try await reopened.moveDocument(filed, to: "")
+        library = try await reopened.library()
+        XCTAssertEqual(library.documents(in: "").map(\.id), [filed])
+        XCTAssertTrue(library.documents(in: factures).isEmpty)
+    }
+
     func testForeignVaultCannotReadCloud() async throws {
         let cloud = MemoryReplica(root: location("."))
         let a = try VaultStore(root: location("a"), keys: VaultKeys(), create: true)

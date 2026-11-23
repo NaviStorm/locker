@@ -60,6 +60,10 @@ struct ListedDocument: Identifiable, Equatable {
 struct VaultLibrary {
     var documents: [ListedDocument] = []
     var folders: [String] = []
+
+    func documents(in folder: String) -> [ListedDocument] {
+        documents.filter { $0.labels.folder == folder }
+    }
 }
 
 struct Catalog: Codable {

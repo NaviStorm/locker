@@ -51,6 +51,32 @@ final class AppSessionTests: VaultTestCase {
         }
     }
 
+    @MainActor func testNewFolderHasItsOwnToolbarButton() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("barre"))
+        let host = UIHostingController(rootView: LibraryScreen(model: model))
+        host.modalPresentationStyle = .fullScreen
+        presenter.present(host, animated: false)
+        defer { host.dismiss(animated: false) }
+
+        func toolbarButton(_ label: String, in view: UIView) -> UIView? {
+            if view.accessibilityLabel == label && view.accessibilityTraits.contains(.button) { return view }
+            return view.subviews.lazy.compactMap { toolbarButton(label, in: $0) }.first
+        }
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(50))
+            if let folder = toolbarButton("Nouveau dossier", in: host.view),
+               let add = toolbarButton("Ajouter", in: host.view) {
+                let frame = folder.convert(folder.bounds, to: host.view)
+                XCTAssertTrue(host.view.bounds.intersects(frame))
+                XCTAssertFalse(frame.intersects(add.convert(add.bounds, to: host.view)))
+                return
+            }
+        }
+        XCTFail("Les deux commandes doivent être accessibles sans ouvrir de menu.")
+    }
+
     @MainActor func testRenameSurvivesLockAndRelaunch() async throws {
         let base = location("coffres")
         let slot = UUID().uuidString
