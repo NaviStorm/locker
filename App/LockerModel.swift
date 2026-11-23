@@ -4,6 +4,8 @@ import Observation
 
 @MainActor @Observable
 final class LockerModel {
+    typealias OpenSession = (AccessMode, URL, LAContext, SessionGate) async throws -> VaultStore
+    @ObservationIgnored private let openSession: OpenSession
     let base: URL
     var vaultNames: [String: String] = [:]
     var slots: [String] = []
@@ -13,6 +15,7 @@ final class LockerModel {
     var library = VaultLibrary()
     var documents: [ListedDocument] { library.documents }
     var vaultTitle: String { vaultNames[slot] ?? (familyMode ? "Coffre familial" : "Coffre personnel") }
+    var extracting = false
     var opening = false
     var repairSelected = false
     var problem: String?
@@ -29,7 +32,9 @@ final class LockerModel {
     @ObservationIgnored private var lastActivity = ContinuousClock.now
     @ObservationIgnored private var nextSync = ContinuousClock.now
 
-    init(base: URL = URL.applicationSupportDirectory.appendingPathComponent("Locker/vaults", isDirectory: true)) {
+    init(base: URL = URL.applicationSupportDirectory.appendingPathComponent("Locker/vaults", isDirectory: true),
+         openSession: @escaping OpenSession = LockerModel.authenticateAndOpen) {
+        self.openSession = openSession
         self.base = base
         if timeout <= 0 { timeout = 120 }
         slots = ((try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? [])
@@ -82,6 +87,7 @@ final class LockerModel {
         familyMode = false
         library = VaultLibrary()
         opening = false
+        extracting = false
         syncing = false
         configuration = ProviderSettings()
         recovery = nil
@@ -89,12 +95,23 @@ final class LockerModel {
         syncStatus = ""
     }
 
-    func open(_ mode: AccessMode, newSlot: Bool = false) {
+    nonisolated static func authenticateAndOpen(_ mode: AccessMode, at root: URL,
+                                                context: LAContext, gate: SessionGate) async throws -> VaultStore {
+        if case .unlock = mode {} else {
+            guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Autoriser ce coffre sur cet appareil")
+            else { throw VaultError.locked }
+        }
+        let device = DeviceKeychain(account: root.lastPathComponent)
+        return try await Task.detached {
+            try VaultAccess.open(mode, at: root, device: device, context: context, gate: gate)
+        }.value
+    }
+
+    func open(_ mode: AccessMode, newSlot: Bool = false, afterOpen: (() -> Void)? = nil) {
         guard !opening, store == nil else { return }
         let selected = newSlot ? UUID().uuidString : slot
         guard UUID(uuidString: selected) != nil else { return }
         let root = base.appendingPathComponent(selected)
-        let device = DeviceKeychain(account: selected)
         let gate = SessionGate()
         let auth = LAContext()
         auth.localizedReason = "Ouvrir le coffre documentaire"
@@ -104,13 +121,7 @@ final class LockerModel {
         Task {
             defer { if accessGate === gate { opening = false; auth.invalidate(); context = nil } }
             do {
-                if case .unlock = mode {} else {
-                    guard try await auth.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Autoriser ce coffre sur cet appareil")
-                    else { throw VaultError.locked }
-                }
-                let session = try await Task.detached {
-                    try VaultAccess.open(mode, at: root, device: device, context: auth, gate: gate)
-                }.value
+                let session = try await openSession(mode, root, auth, gate)
                 let list = try await session.library()
                 let shared = await session.family != nil
                 let config: ProviderSettings
@@ -131,6 +142,7 @@ final class LockerModel {
                 recovery = code
                 store = session
                 familyMode = shared
+                afterOpen?()
                 activity()
                 sync()
             } catch { if accessGate === gate { problem = error.localizedDescription } }

@@ -77,6 +77,57 @@ final class AppSessionTests: VaultTestCase {
         XCTFail("Les deux commandes doivent être accessibles sans ouvrir de menu.")
     }
 
+    @MainActor func testArchiveDestinationSwitchUnlocksOrCreatesBeforeExtraction() async throws {
+        let base = location("destinations")
+        let keys = VaultKeys()
+        let originalID = UUID().uuidString
+        let otherID = UUID().uuidString
+        let originalRoot = base.appendingPathComponent(originalID)
+        let otherRoot = base.appendingPathComponent(otherID)
+        let original = try VaultStore(root: originalRoot, keys: keys, create: true)
+        _ = try VaultStore(root: otherRoot, keys: keys, create: true)
+        var deny = true
+        let model = LockerModel(base: base) { mode, root, _, gate in
+            if deny { throw VaultError.locked }
+            switch mode {
+            case .unlock: return try VaultStore(root: root, keys: keys, gate: gate)
+            case .create: return try VaultStore(root: root, keys: VaultKeys(), create: true, gate: gate)
+            case .recover: throw VaultError.unavailable
+            }
+        }
+        let zip = location("exemple.zip")
+        try XCTUnwrap(Data(base64Encoded: ArchiveTests.zip)).write(to: zip)
+        let files = SelectedImport([zip])
+        func settle() async throws {
+            for _ in 0..<200 {
+                if !model.opening && !model.extracting && (model.problem != nil || !model.documents.isEmpty) { return }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTFail("Import inachevé")
+        }
+        try await model.adoptRotated(original, slotID: originalID, code: "fictif")
+        model.extract(files, to: .existing(otherID), folder: "Source")
+        try await settle()
+        XCTAssertNil(model.store)
+        let untouched = try await VaultStore(root: otherRoot, keys: keys).list()
+        XCTAssertTrue(untouched.isEmpty)
+        deny = false
+        model.lock()
+        try await model.adoptRotated(VaultStore(root: originalRoot, keys: keys), slotID: originalID, code: "fictif")
+        model.extract(files, to: .existing(otherID), folder: "Source")
+        try await settle()
+        XCTAssertEqual(model.slot, otherID)
+        XCTAssertEqual(model.library.documents(in: "").map(\.labels.name), ["note.txt"])
+        model.extract(files, to: .new, folder: "Source")
+        try await settle()
+        XCTAssertEqual(model.slots.count, 3)
+        XCTAssertNotEqual(model.slot, otherID)
+        XCTAssertNotNil(model.recovery)
+        XCTAssertEqual(model.documents.count, 2)
+        let source = try await VaultStore(root: originalRoot, keys: keys).list()
+        XCTAssertTrue(source.isEmpty)
+    }
+
     @MainActor func testRenameSurvivesLockAndRelaunch() async throws {
         let base = location("coffres")
         let slot = UUID().uuidString

@@ -209,6 +209,15 @@ actor VaultStore {
     }
 
     private func add(name: String, parent: UUID? = nil, folder: String = "", isFolder: Bool? = nil, read: () throws -> Data) throws -> UUID {
+        let entry = try stageDocument(name: name, parent: parent, folder: folder, isFolder: isFolder, read: read)
+        do { try replace(entry) }
+        catch { try? FileManager.default.removeItem(at: blob(entry.id)); throw error }
+        return entry.id
+    }
+
+    // The caller publishes the encrypted blob with a catalogue commit, or discards it.
+    func stageDocument(name: String, parent: UUID? = nil, folder: String, isFolder: Bool? = nil,
+                       read: () throws -> Data) throws -> Entry {
         let original = parent.flatMap { entries[$0]?.document }
         if parent != nil && (original == nil || original?.isFolder == true) { throw VaultError.unavailable }
         let nonce = UUID()
@@ -219,16 +228,10 @@ actor VaultStore {
         let key = SymmetricKey(size: .bits256)
         let url = blob(id)
         let size = try BlockCipher.encrypt(id: id, key: key, to: url, gate: gate, read: read)
-        do {
-            let document = Document(labels: Labels(name: name, folder: original?.labels.folder ?? folder), key: key.withUnsafeBytes { Data($0) }, size: size,
-                                    originAuthor: family?.principal, originNonce: nonce, lineage: scope,
-                                    parent: parent, created: Date(), isFolder: isFolder)
-            try replace(Entry(id: id, generation: 1, revision: UUID(), document: document))
-            return id
-        } catch {
-            try? FileManager.default.removeItem(at: url)
-            throw error
-        }
+        let document = Document(labels: Labels(name: name, folder: original?.labels.folder ?? folder),
+                                key: key.withUnsafeBytes { Data($0) }, size: size, originAuthor: family?.principal,
+                                originNonce: nonce, lineage: scope, parent: parent, created: Date(), isFolder: isFolder)
+        return Entry(id: id, generation: 1, revision: UUID(), document: document)
     }
 
     private func labelsForDocument(_ id: UUID) throws -> Labels {

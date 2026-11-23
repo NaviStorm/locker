@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [.library(name: "LockerCore", targets: ["LockerCore"])],
     targets: [
-        .target(name: "LockerCore", path: "Core"),
+        .systemLibrary(name: "CLockerArchive", path: "Modules/CLockerArchive"),
+        .target(name: "LockerCore", dependencies: ["CLockerArchive"], path: "Core"),
         .testTarget(name: "LockerCoreTests", dependencies: ["LockerCore"], path: "Tests")
     ]
 )

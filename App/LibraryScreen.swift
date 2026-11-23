@@ -11,6 +11,7 @@ struct LibraryScreen: View {
     @State private var selection: UUID?
     @State private var settings = false
     @State private var importer = false
+    @State private var archiveSelection: SelectedImport?
     @State private var scanner = false
     @State private var versionParent: UUID?
     @State private var pendingRename: ListedDocument?
@@ -85,7 +86,7 @@ struct LibraryScreen: View {
                         Button("Retour au coffre", systemImage: "chevron.backward") { folder = "" }
                     }
                     Menu {
-                        Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }
+                        Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }.disabled(model.extracting)
                         #if os(iOS)
                         if ScanScreen.supported { Button("Numériser", systemImage: "document.viewfinder") { scanner = true } }
                         #else
@@ -121,17 +122,22 @@ struct LibraryScreen: View {
         .fileImporter(isPresented: $importer, allowedContentTypes: [.item], allowsMultipleSelection: versionParent == nil) { result in
             switch result {
             case let .success(urls):
-                let parent = versionParent
-                let destination = folder
-                model.perform { store in
-                    for url in urls {
-                        let access = url.startAccessingSecurityScopedResource()
-                        defer { if access { url.stopAccessingSecurityScopedResource() } }
-                        _ = try await store.importCoordinated(url, parent: parent, folder: destination)
-                    }
+                let files = SelectedImport(urls)
+                if versionParent == nil && files.containsArchive {
+                    archiveSelection = files
+                } else {
+                    model.importOriginals(files, parent: versionParent, folder: folder)
                 }
             case let .failure(error):
                 if (error as NSError).code != NSUserCancelledError { model.problem = error.localizedDescription }
+            }
+        }
+        .sheet(item: $archiveSelection) { files in
+            ArchiveDestinationScreen(model: model, files: files, folder: folder)
+        }
+        .overlay(alignment: .bottom) {
+            if model.extracting {
+                ProgressView("Décompression…").padding().background(.regularMaterial, in: Capsule())
             }
         }
         .alert("Nouveau dossier", isPresented: $creatingFolder) {
