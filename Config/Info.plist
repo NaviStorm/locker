@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDevelopmentRegion</key><string>fr</string>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>Dropbox OAuth</string><key>CFBundleURLSchemes</key><array><string>locker-vault</string></array></dict></array>
+<key>NSFaceIDUsageDescription</key><string>Authentifiez-vous pour accéder aux clés de votre coffre.</string>
+<key>NSCameraUsageDescription</key><string>Prendre une photo pour importer un document dans le coffre.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Synchroniser ce coffre avec le serveur WebDAV que vous avez choisi.</string>
+<key>CKSharingSupported</key><true/>
+</dict></plist>

@@ -64,7 +64,7 @@ extension VaultStore {
     }
 }
 
-private struct ProviderCredential {
+struct ProviderCredential {
     let account: String
     var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecUseDataProtectionKeychain as String: true,
