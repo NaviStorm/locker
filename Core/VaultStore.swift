@@ -12,6 +12,7 @@ struct Document: Codable, Equatable {
     var labels: Labels
     let key: Data
     let size: Int64
+    var originNonce: UUID?
     var lineage: UUID?
     var parent: UUID?
     var created: Date?
@@ -23,6 +24,8 @@ struct Entry: Codable, Equatable {
     var generation: UInt64
     var revision: UUID
     var document: Document?
+    var tombstoneScope: UUID?
+    var scope: UUID { document?.lineage ?? tombstoneScope ?? id }
 
     func mergingLabels(from other: Entry) -> Entry {
         guard document != nil, let old = other.document else { return self }
@@ -53,6 +56,7 @@ struct ListedDocument: Identifiable, Equatable {
 struct Catalog: Codable {
     var entries: [UUID: Entry]
     var pending: [UUID: UUID]
+    var family: FamilyLocal?
 }
 
 actor VaultStore {
@@ -61,6 +65,7 @@ actor VaultStore {
     let keys: VaultKeys
     private(set) var entries: [UUID: Entry]
     private(set) var pending: [UUID: UUID]
+    private(set) var family: FamilyLocal?
 
     init(root: URL, keys: VaultKeys, create: Bool = false, gate: SessionGate = SessionGate()) throws {
         self.root = root
@@ -76,6 +81,7 @@ actor VaultStore {
         let state = try Self.readCatalog(catalog, keys: keys)
         entries = state.entries
         pending = state.pending
+        family = state.family
         // A crash can leave encrypted content without a committed catalogue reference.
         for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             where file.pathExtension == "blob" {
@@ -114,10 +120,11 @@ actor VaultStore {
         try commit(entries, queue)
     }
 
-    private func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID]) throws {
-        let data = try Self.pack(Catalog(entries: updated, pending: queue), keys: keys, purpose: "catalog")
+    func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID], family newFamily: FamilyLocal? = nil) throws {
+        let data = try Self.pack(Catalog(entries: updated, pending: queue, family: newFamily ?? family), keys: keys, purpose: "catalog")
         try gate.authorized {
             try VaultFiles.save(data, to: root.appendingPathComponent("catalog.v1"))
+            family = newFamily ?? family
             entries = updated
             pending = queue
         }
@@ -161,13 +168,16 @@ actor VaultStore {
 
     private func add(name: String, parent: UUID? = nil, read: () throws -> Data) throws -> UUID {
         if let parent, entries[parent]?.document == nil { throw VaultError.unavailable }
-        let id = UUID()
+        let nonce = UUID()
+        let id = family.map { FamilyEvent.scopedID(author: $0.principal, nonce: nonce) } ?? UUID()
+        let scope = parent.flatMap { entries[$0]?.scope } ?? id
+        try authorizeLocal(.add, scope: scope)
         let key = SymmetricKey(size: .bits256)
         let url = blob(id)
         let size = try BlockCipher.encrypt(id: id, key: key, to: url, gate: gate, read: read)
         do {
             let document = Document(labels: Labels(name: name), key: key.withUnsafeBytes { Data($0) }, size: size,
-                                    lineage: parent.flatMap { entries[$0]?.document?.lineage ?? $0 } ?? id,
+                                    originNonce: nonce, lineage: scope,
                                     parent: parent, created: Date())
             try replace(Entry(id: id, generation: 1, revision: UUID(), document: document))
             return id
@@ -180,13 +190,14 @@ actor VaultStore {
     func change(_ id: UUID, labels: Labels?) throws {
         try gate.check()
         guard var entry = entries[id], entry.document != nil else { throw VaultError.unavailable }
+        try authorizeLocal(labels == nil ? .delete : .edit, scope: entry.scope)
         if let labels, var document = entry.document {
             var previous = document.previousLabels ?? [:]
             previous[entry.revision] = document.labels
             document.previousLabels = previous
             document.labels = labels
             entry.document = document
-        } else { entry.document = nil }
+        } else { entry.tombstoneScope = entry.scope; entry.document = nil }
         entry.generation += 1
         entry.revision = UUID()
         try replace(entry)

@@ -17,8 +17,16 @@ protocol VaultReplica {
 extension VaultStore {
     func synchronize(with replica: VaultReplica) async throws {
         try gate.check()
+        guard family == nil else { throw FamilyError.denied }
         let remoteIDs = try await replica.identifiers()
+        let tags = await (replica as? ObjectReplica)?.documentTags
+        let cursor = root.appendingPathComponent("remote-tags.v1")
+        let previous: [UUID: String]
+        if tags != nil, FileManager.default.fileExists(atPath: cursor.path) {
+            previous = try Self.unpack([UUID: String].self, data: Data(contentsOf: cursor), keys: keys, purpose: "remote-tags")
+        } else { previous = [:] }
         for id in remoteIDs.union(entries.keys) {
+            if let tag = tags?[id], !tag.isEmpty, previous[id] == tag, entries[id] != nil, pending[id] == nil { continue }
             var success = false
             for _ in 0..<4 {
                 try gate.check()
@@ -30,6 +38,10 @@ extension VaultStore {
                 } catch ReplicaError.conflict { continue }
             }
             guard success else { throw VaultError.changed }
+        }
+        if let tags {
+            let data = try Self.pack(tags, keys: keys, purpose: "remote-tags")
+            try gate.authorized { try VaultFiles.save(data, to: cursor) }
         }
     }
 
@@ -76,7 +88,7 @@ extension VaultStore {
         try acknowledge(id, revision: local.revision)
     }
 
-    private func receive(_ source: URL, id: UUID, info: Document) throws {
+    func receive(_ source: URL, id: UUID, info: Document) throws {
         let staging = root.appendingPathComponent(UUID().uuidString + ".incoming")
         try FileManager.default.copyItem(at: source, to: staging)
         defer { try? FileManager.default.removeItem(at: staging) }

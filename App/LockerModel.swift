@@ -32,6 +32,17 @@ final class LockerModel {
         slot = slots.first ?? ""
     }
 
+    func adoptRotated(_ session: VaultStore, slotID: String, code: String) async throws {
+        accessGate = session.gate
+        let list = try await session.list()
+        try session.gate.check()
+        slot = slotID
+        store = session
+        documents = list
+        recovery = code
+        activity()
+    }
+
     func activity() { lastActivity = .now }
     func tick() {
         guard store != nil else { return }
@@ -115,7 +126,7 @@ final class LockerModel {
         let provider = configuration.provider
         syncTask = Task {
             do {
-                if let replica = try await session.configuredReplica() { try await session.synchronize(with: replica) }
+                try await session.syncConfigured()
                 let updated = try await session.list()
                 guard store === session, !Task.isCancelled else { return }
                 documents = updated

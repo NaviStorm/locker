@@ -31,6 +31,10 @@ extension VaultStore {
             let data = try Self.pack(credential, keys: keys, purpose: "provider/" + config.provider.rawValue)
             try ProviderCredential(account: credentialAccount(config)).save(data)
         }
+        if try settings() != config {
+            let oldCursor = root.appendingPathComponent("remote-tags.v1")
+            if FileManager.default.fileExists(atPath: oldCursor.path) { try FileManager.default.removeItem(at: oldCursor) }
+        }
         let data = try Self.pack(config, keys: keys, purpose: "transport")
         try gate.authorized { try VaultFiles.save(data, to: root.appendingPathComponent("transport.v1")) }
     }
@@ -41,25 +45,39 @@ extension VaultStore {
         return SHA256.hash(data: (try? JSONEncoder().encode(fields)) ?? Data()).map { String(format: "%02x", $0) }.joined()
     }
 
-    func configuredReplica() throws -> VaultReplica? {
+    func syncConfigured() async throws {
         let config = try settings()
+        guard config.provider != .local else { return }
+        let bucket = try await objectBucket(config)
+        if family != nil {
+            try await synchronizeFamily(bucket: bucket, identity: identity())
+        } else {
+            let replica = try ObjectReplica(bucket: bucket, cache: root.appendingPathComponent("transfers"), gate: gate)
+            try await synchronize(with: replica)
+        }
+    }
+
+    func objectBucket(_ config: ProviderSettings) async throws -> ObjectBucket {
+        let namespace = try family?.tip.decoded().vault.uuidString.lowercased() ?? keys.identifier
         switch config.provider {
-        case .local: return nil
-        case .cloud: return CloudReplica(vaultID: keys.identifier)
+        case .local: throw VaultError.unavailable
+        case .cloud:
+            return try await CloudBucket.connect(vault: namespace, invitation: family?.cloudURL,
+                                                 cache: root.appendingPathComponent("transfers"))
         case .dropbox, .webdav:
             let data = try ProviderCredential(account: credentialAccount(config)).read()
             let secret = try Self.unpack(String.self, data: data, keys: keys, purpose: "provider/" + config.provider.rawValue)
             let bucket: ObjectBucket
             if config.provider == .webdav {
-                bucket = try WebDAVBucket(server: config.endpoint, user: config.username, password: secret, vault: keys.identifier)
+                bucket = try WebDAVBucket(server: config.endpoint, user: config.username, password: secret, vault: namespace)
             } else {
                 let folder = config.sharedFolder.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard folder.isEmpty || (folder.hasPrefix("/") && folder.utf8.allSatisfy({ (32...126).contains($0) })) else {
                     throw TransportError(message: "Utilisez un chemin Dropbox ASCII commençant par /.")
                 }
-                bucket = DropboxBucket(client: config.appKey, refresh: secret, folder: folder + "/locker-" + keys.identifier)
+                bucket = DropboxBucket(client: config.appKey, refresh: secret, folder: folder + "/locker-" + namespace)
             }
-            return try ObjectReplica(bucket: bucket, cache: root.appendingPathComponent("transfers"), gate: gate)
+            return bucket
         }
     }
 }

@@ -55,7 +55,7 @@ struct DropboxAuthorization {
 actor DropboxBucket: ObjectBucket {
     private let client: String
     private let refresh: String
-    private let folder: String
+    let folder: String
     private var bearer: String?
 
     init(client: String, refresh: String, folder: String) {
@@ -64,8 +64,8 @@ actor DropboxBucket: ObjectBucket {
         self.folder = folder
     }
 
-    private func send(_ endpoint: String, _ arguments: [String: Any], upload: Data? = nil,
-                      content: Bool = false) async throws -> (Data, HTTPURLResponse) {
+    func send(_ endpoint: String, _ arguments: [String: Any], upload: Data? = nil,
+                      content: Bool = false, sharing: Bool = false) async throws -> (Data, HTTPURLResponse) {
         for _ in 0..<2 {
             if bearer == nil {
                 let response = try await DropboxAuthorization.token(["client_id": client, "refresh_token": refresh,
@@ -74,7 +74,7 @@ actor DropboxBucket: ObjectBucket {
                 bearer = token
             }
             let host = content ? "content.dropboxapi.com" : "api.dropboxapi.com"
-            var request = URLRequest(url: URL(string: "https://" + host + "/2/files/" + endpoint)!)
+            var request = URLRequest(url: URL(string: "https://" + host + (sharing ? "/2/sharing/" : "/2/files/") + endpoint)!)
             request.httpMethod = "POST"
             request.setValue("Bearer " + (bearer ?? ""), forHTTPHeaderField: "Authorization")
             let json = try JSONSerialization.data(withJSONObject: arguments)

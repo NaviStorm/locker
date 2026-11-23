@@ -57,7 +57,7 @@ struct RootScreen: View {
         .background(PrivacyMonitor(activity: { model.activity() }, background: {
             code = ""
             #if os(macOS)
-            if !model.opening { model.lock() }
+            if !model.opening || model.store != nil { model.lock() }
             #else
             model.lock()
             #endif

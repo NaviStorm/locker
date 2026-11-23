@@ -56,6 +56,23 @@ struct DeviceIdentity: Codable {
         }
     }
 
+    /// The rescue identity can be reconstructed only with the owner's high-entropy offline secret.
+    init(rescue keys: VaultKeys) throws {
+        hardware = false
+        func scalar(_ label: String) -> Data {
+            var counter = 0
+            while true {
+                let candidate = keys.key("rescue/" + label + "/" + String(counter)).withUnsafeBytes { Data($0) }
+                if (try? P256.Signing.PrivateKey(rawRepresentation: candidate)) != nil { return candidate }
+                counter += 1
+            }
+        }
+        agreement = scalar("agreement")
+        signing = scalar("signing")
+        card = try PublicIdentity(agreement: P256.KeyAgreement.PrivateKey(rawRepresentation: agreement).publicKey.x963Representation,
+                                  signing: P256.Signing.PrivateKey(rawRepresentation: signing).publicKey.x963Representation)
+    }
+
     func sign(_ data: Data) throws -> Data {
         if hardware { return try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: signing).signature(for: data).derRepresentation }
         return try P256.Signing.PrivateKey(rawRepresentation: signing).signature(for: data).derRepresentation
@@ -105,6 +122,10 @@ struct SignedObject: Codable {
 extension VaultStore {
     func identity() throws -> DeviceIdentity {
         try gate.check()
+        if let family {
+            let rescue = try DeviceIdentity(rescue: keys)
+            if family.principal == rescue.card.fingerprint { return rescue }
+        }
         let cred = ProviderCredential(account: "identity-" + root.lastPathComponent + "-" + keys.identifier)
         do { return try Self.unpack(DeviceIdentity.self, data: cred.read(), keys: keys, purpose: "identity") }
         catch let error as KeychainFailure where error.status == errSecItemNotFound {
@@ -117,6 +138,7 @@ extension VaultStore {
     func publicIdentity() throws -> PublicIdentity { try identity().card }
 
     func inviteOwnDevice(card: PublicIdentity) throws -> String {
+        guard family == nil else { throw FamilyError.denied }
         let grant = try SealedGrant(keys.secret, for: card)
         let signed = try SignedObject(grant, by: identity(), domain: "Locker-owner-device-1")
         return try JSONEncoder().encode(signed).base64EncodedString()

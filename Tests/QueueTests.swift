@@ -5,7 +5,7 @@ import XCTest
 @testable import Locker
 #endif
 
-private actor FakeBucket: ObjectBucket {
+actor FakeBucket: ObjectBucket {
     var objects = [String: BucketValue]()
     var writes = 0
     var failAfter: Int?

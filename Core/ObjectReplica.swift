@@ -36,6 +36,15 @@ actor ObjectReplica: VaultReplica {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    func seedInventory(_ values: [String: String]) { known = values }
+
+    var documentTags: [UUID: String] {
+        Dictionary(known.compactMap { name, tag -> (UUID, String)? in
+            guard name.hasPrefix("d-"), let id = UUID(uuidString: String(name.dropFirst(2))) else { return nil }
+            return (id, tag)
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
     func identifiers() async throws -> Set<UUID> {
         known = try await bucket.inventory()
         return Set(known.keys.compactMap { name in
@@ -50,12 +59,17 @@ actor ObjectReplica: VaultReplica {
         guard let value = try await bucket.get(name) else { return nil }
         let index = try JSONDecoder().decode(RemoteIndex.self, from: value.data)
         guard withFile else { return RemoteDocument(version: value.tag, envelope: index.envelope, file: nil) }
-        let outputURL = cache.appendingPathComponent(name + ".download")
+        let outputURL = try await assemble(index.chunks, id: id)
+        return RemoteDocument(version: value.tag, envelope: index.envelope, file: outputURL)
+    }
+
+    func assemble(_ chunks: [String], id: UUID) async throws -> URL {
+        let outputURL = cache.appendingPathComponent(id.uuidString + ".download")
         // This is a disposable reconstruction from verified ciphertext chunks.
         if FileManager.default.fileExists(atPath: outputURL.path) { try FileManager.default.removeItem(at: outputURL) }
         let output = try VaultFiles.newFile(outputURL)
         defer { try? output.close() }
-        for chunk in index.chunks {
+        for chunk in chunks {
             try gate.check()
             guard chunk.count == 64, chunk.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
                 throw VaultError.damaged
@@ -73,10 +87,17 @@ actor ObjectReplica: VaultReplica {
             try output.write(contentsOf: bytes)
         }
         try output.close()
-        return RemoteDocument(version: value.tag, envelope: index.envelope, file: outputURL)
+        return outputURL
     }
 
     func put(_ id: UUID, envelope: Data, file: URL?, replacing version: String?) async throws {
+        let chunks = try await uploadChunks(file)
+        try gate.check()
+        let value = try JSONEncoder().encode(RemoteIndex(envelope: envelope, chunks: chunks))
+        try await bucket.put(value, name: "d-" + id.uuidString.lowercased(), replacing: version)
+    }
+
+    func uploadChunks(_ file: URL?) async throws -> [String] {
         var chunks = [String]()
         if let file {
             let input = try FileHandle(forReadingFrom: file)
@@ -97,8 +118,6 @@ actor ObjectReplica: VaultReplica {
                 chunks.append(hash)
             }
         }
-        try gate.check()
-        let value = try JSONEncoder().encode(RemoteIndex(envelope: envelope, chunks: chunks))
-        try await bucket.put(value, name: "d-" + id.uuidString.lowercased(), replacing: version)
+        return chunks
     }
 }

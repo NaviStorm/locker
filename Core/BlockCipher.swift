@@ -19,11 +19,7 @@ enum BlockCipher {
                 try gate.check()
                 let bytes = try read()
                 guard bytes.count <= chunk else { throw VaultError.damaged }
-                let box = try AES.GCM.seal(bytes, using: key, authenticating: aad(id, position))
-                guard let combined = box.combined else { throw VaultError.damaged }
-                var length = UInt32(combined.count).bigEndian
-                try output.write(contentsOf: withUnsafeBytes(of: &length) { Data($0) })
-                try output.write(contentsOf: combined)
+                try frame(bytes, id: id, position: position, key: key, output: output)
                 if bytes.isEmpty { break } // authenticated end marker, including for an empty document
                 count += Int64(bytes.count)
                 position += 1
@@ -31,6 +27,33 @@ enum BlockCipher {
             try output.synchronize()
             try output.close()
             return count
+        } catch {
+            try? output.close()
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
+    }
+
+    private static func frame(_ bytes: Data, id: UUID, position: UInt64, key: SymmetricKey, output: FileHandle) throws {
+        let box = try AES.GCM.seal(bytes, using: key, authenticating: aad(id, position))
+        guard let combined = box.combined else { throw VaultError.damaged }
+        var length = UInt32(combined.count).bigEndian
+        try output.write(contentsOf: withUnsafeBytes(of: &length) { Data($0) })
+        try output.write(contentsOf: combined)
+    }
+
+    static func reencrypt(id: UUID, info: Document, source: URL, as targetID: UUID,
+                          using key: SymmetricKey, to url: URL, gate: SessionGate) throws {
+        let output = try VaultFiles.newFile(url)
+        do {
+            var position: UInt64 = 0
+            try decrypt(id: id, info: info, from: source, gate: gate) { bytes in
+                try frame(bytes, id: targetID, position: position, key: key, output: output)
+                position += 1
+            }
+            try frame(Data(), id: targetID, position: position, key: key, output: output)
+            try output.synchronize()
+            try output.close()
         } catch {
             try? output.close()
             try? FileManager.default.removeItem(at: url)

@@ -11,6 +11,8 @@ struct SettingsScreen: View {
     @State private var errorText = ""
     @State private var code: String?
     @State private var sharing = false
+    @State private var family = false
+    @State private var rotate = false
     init(model: LockerModel) {
         self.model = model
         _draft = State(initialValue: model.configuration)
@@ -29,7 +31,9 @@ struct SettingsScreen: View {
                             model.perform { store in code = try await store.recoveryCode() }
                         }
                     }
-                    Button("Identités et invitations") { sharing = true }
+                    Button("Partage familial") { family = true }
+                    Button("Renouveler mon coffre personnel…") { rotate = true }
+                    Button("Mes appareils") { sharing = true }
                 }
                 Section("Synchronisation de ce coffre") {
                     Picker("Fournisseur", selection: $draft.provider) {
@@ -55,6 +59,15 @@ struct SettingsScreen: View {
                 }
             }.formStyle(.grouped).navigationTitle("Réglages du coffre")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+            .confirmationDialog("Créer un nouveau coffre avec de nouvelles clés et conserver l’ancien hors ligne ?", isPresented: $rotate) {
+                Button("Rechiffrer les documents") {
+                    Task {
+                        do { try await model.rotatePersonal(); dismiss() }
+                        catch { errorText = error.localizedDescription }
+                    }
+                }
+            }
+            .sheet(isPresented: $family) { FamilyScreen(model: model) }
             .sheet(isPresented: $sharing) { IdentityScreen(model: model) }
         }.frame(idealWidth: 530, idealHeight: 520)
     }
