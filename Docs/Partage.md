@@ -6,7 +6,7 @@ Un fournisseur curieux, un membre en lecture seule qui modifie son client, la su
 
 ## Identité et admission
 
-Chaque appareil présente deux clés publiques P-256, une d’accord et une de signature. L’empreinte SHA-256 de la carte publique doit être comparée sur un canal indépendant. La clé privée reste sur l’appareil. Le destinataire compare aussi l’empreinte de l’émetteur. Une invitation transporte une enveloppe HPKE RFC 9180 adressée à cette carte, liée au coffre et au destinataire. Une signature ECDSA lie le contenu exact à l’identité vérifiée. Les encodages signés sont conservés tels quels pour éviter la recanonisation de JSON.
+Chaque appareil présente deux clés publiques P-256, une d’accord et une de signature. L’empreinte SHA-256 de la carte publique doit être comparée sur un canal indépendant. La clé privée reste sur l’appareil. Le destinataire compare aussi l’empreinte de l’émetteur. Une invitation transporte une enveloppe HPKE RFC 9180 adressée à cette carte, liée au coffre et au destinataire. Une signature JWS au format JSON aplati avec ES256 lie le contenu exact à l’identité vérifiée. Le type protégé distingue invitations, politiques et événements. [RFC 7515](https://www.rfc-editor.org/rfc/rfc7515) · [RFC 7518](https://www.rfc-editor.org/rfc/rfc7518) Les encodages signés sont conservés tels quels pour éviter la recanonisation de JSON.
 
 ## Autorisations
 
