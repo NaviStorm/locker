@@ -44,7 +44,10 @@ struct SettingsScreen: View {
                         ForEach(Provider.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     if draft.provider == .webdav {
-                        TextField("URL HTTPS du dossier WebDAV", text: $draft.endpoint)
+                        TextField("URL HTTPS du dossier partagé", text: $draft.endpoint)
+                        Text("Si le partage se nomme Documents, saisissez par exemple https://nas.example:5006/Documents/")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         TextField("Utilisateur du NAS", text: $draft.username)
                         SecureField("Mot de passe du NAS", text: $password)
                     }

@@ -47,6 +47,14 @@ struct WebDAVBucket: ObjectBucket {
         return request
     }
 
+    private func check(_ response: HTTPURLResponse, operation: String) throws {
+        if response.statusCode == 405 {
+            throw TransportError(message: "HTTP 405 — le serveur WebDAV refuse " + operation
+                + ". Vérifiez l’URL du dossier partagé et les droits de votre compte sur ce dossier.")
+        }
+        try Network.check(response)
+    }
+
     func inventory() async throws -> [String: String] {
         var query = request("PROPFIND")
         query.setValue("1", forHTTPHeaderField: "Depth")
@@ -57,8 +65,12 @@ struct WebDAVBucket: ObjectBucket {
             let (_, create) = try await exchange(request("MKCOL"))
             if create.statusCode != 405 { try Network.check(create) }
             (data, response) = try await exchange(query)
+            // MKCOL may return 405 when another device has already created the collection.
+            if create.statusCode == 405 && response.statusCode == 404 {
+                try check(create, operation: "la création du dossier du coffre (MKCOL)")
+            }
         }
-        try Network.check(response)
+        try check(response, operation: "la consultation du dossier du coffre (PROPFIND)")
         let listing = DAVListing()
         let parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
@@ -71,7 +83,7 @@ struct WebDAVBucket: ObjectBucket {
     func get(_ name: String) async throws -> BucketValue? {
         let (data, response) = try await exchange(request("GET", name))
         if response.statusCode == 404 { return nil }
-        try Network.check(response)
+        try check(response, operation: "la lecture du fichier (GET)")
         guard let tag = response.value(forHTTPHeaderField: "ETag"), tag.hasPrefix("\""), tag.hasSuffix("\"") else {
             throw TransportError(message: "Ce serveur WebDAV doit fournir des ETag forts pour synchroniser en sécurité.")
         }
@@ -84,6 +96,6 @@ struct WebDAVBucket: ObjectBucket {
         upload.httpBody = bytes
         let (_, response) = try await exchange(upload)
         if response.statusCode == 412 { throw ReplicaError.conflict }
-        try Network.check(response)
+        try check(response, operation: "l’écriture du fichier (PUT)")
     }
 }

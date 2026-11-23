@@ -44,6 +44,47 @@ final class TransportTests: XCTestCase {
         XCTAssertEqual(calls, 5)
     }
 
+    func testWebDAVFolderDiagnostics() async throws {
+        for (statuses, expectedMethod) in [([405], "PROPFIND"), ([404, 405, 404], "MKCOL"), ([404, 405, 207], "")] {
+            var replies = statuses.makeIterator()
+            let bucket = try WebDAVBucket(server: "https://nas.invalid/Documents/", user: "test", password: "fictif", vault: "abc") { req in
+                XCTAssertEqual(req.url?.lastPathComponent, "locker-abc")
+                XCTAssertEqual(req.url?.deletingLastPathComponent().lastPathComponent, "Documents")
+                let xml = #"<d:multistatus xmlns:d="DAV:"/>"#
+                return self.reply(req, status: try XCTUnwrap(replies.next()), text: xml)
+            }
+            do {
+                _ = try await bucket.inventory()
+                XCTAssertTrue(expectedMethod.isEmpty)
+            } catch let error as TransportError {
+                XCTAssertFalse(expectedMethod.isEmpty)
+                XCTAssertTrue(error.message.contains("(\(expectedMethod))"))
+                XCTAssertTrue(error.message.contains("HTTP 405"))
+            }
+            XCTAssertNil(replies.next())
+        }
+    }
+
+    func testWebDAVFileDiagnostics() async throws {
+        let bucket = try WebDAVBucket(server: "https://nas.invalid/Documents/", user: "test", password: "fictif", vault: "abc") { req in
+            self.reply(req, status: 405)
+        }
+        do {
+            _ = try await bucket.get("d-a")
+            XCTFail("Lecture acceptée")
+        } catch let error as TransportError {
+            XCTAssertTrue(error.message.contains("(GET)"))
+            XCTAssertTrue(error.message.contains("HTTP 405"))
+        }
+        do {
+            try await bucket.put(Data(), name: "d-a", replacing: nil)
+            XCTFail("Écriture acceptée")
+        } catch let error as TransportError {
+            XCTAssertTrue(error.message.contains("(PUT)"))
+            XCTAssertTrue(error.message.contains("HTTP 405"))
+        }
+    }
+
     func testDropboxPaginationTokenAndRevision() async throws {
         let bucket = DropboxBucket(client: "client-fictif", refresh: "refresh-fictif", folder: "/locker-test") { req in
             XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer session-fictive")
