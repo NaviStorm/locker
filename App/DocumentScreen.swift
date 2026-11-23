@@ -2,12 +2,12 @@ import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct DocumentScreen: View {
+struct DocumentScreen<Actions: View>: View {
     @Bindable var model: LockerModel
     let item: ListedDocument
     let select: (UUID) -> Void
     let addVersion: () -> Void
-    let remove: () -> Void
+    let actions: Actions
     @State private var bytes: Data?
     @State private var pdf: PagedPDF?
     @State private var notice = ""
@@ -33,6 +33,8 @@ struct DocumentScreen: View {
                               preview: SharePreview(item.labels.name)) { Label("Partager une copie", systemImage: "square.and.arrow.up") }
                 }
                 Menu {
+                    actions
+                    Divider()
                     Button("Exporter dans un dossier…", systemImage: "folder") { exporting = true }
                     Button("Modifier la fiche", systemImage: "pencil") { editing = true }
                     Button("Ajouter une version", systemImage: "doc.on.doc", action: addVersion)
@@ -44,7 +46,6 @@ struct DocumentScreen: View {
                     Button("Historique de la fiche") {
                         model.perform { store in history = try await store.labelHistory(item.id); showHistory = true }
                     }
-                    Button("Supprimer cette version", role: .destructive, action: remove)
                 } label: { Label("Actions", systemImage: "ellipsis.circle") }
             }
         }

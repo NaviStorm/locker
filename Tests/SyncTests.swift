@@ -99,6 +99,52 @@ final class SyncTests: VaultTestCase {
         XCTAssertEqual(synced.documents, offline.documents)
     }
 
+    func testRenameMoveAndDeleteSelectedDocumentOffline() async throws {
+        let keys = VaultKeys()
+        let root = location("local")
+        let store = try VaultStore(root: root, keys: keys, create: true)
+        let replica = MemoryReplica(root: location("."))
+        let peer = try VaultStore(root: location("distant"), keys: keys, create: true)
+        let folder = try await store.createFolder("Archives")
+        let first = try await store.importData(Data([1]), name: "ancienne.txt")
+        let source = location("nouvelle.txt")
+        try Data([2]).write(to: source)
+        let id = try await store.importFile(source, versionOf: first)
+        try await store.change(id, labels: Labels(name: "nouvelle.txt", category: "Facture", notes: "Fictif"))
+        try await store.synchronize(with: replica)
+        try await peer.synchronize(with: replica)
+        await replica.offline(true)
+        for invalid in [" ", "../essai", ".", "..", "a\0b"] {
+            do { try await store.renameDocument(id, to: invalid); XCTFail("Nom accepté") } catch {}
+        }
+        do { try await store.moveDocument(id, to: "Absent"); XCTFail("Dossier absent accepté") } catch {}
+        try await store.renameDocument(id, to: "  facture.txt  ")
+        try await store.moveDocument(id, to: folder)
+        try await store.moveDocument(id, to: "")
+        try await store.moveDocument(id, to: folder)
+        let reopened = try VaultStore(root: root, keys: keys)
+        let expected = Labels(name: "facture.txt", folder: folder, category: "Facture", notes: "Fictif")
+        let offline = try await reopened.list()
+        XCTAssertEqual(offline.first(where: { $0.id == id })?.labels, expected)
+        let bytes = try await reopened.preview(id)
+        XCTAssertEqual(bytes, Data([2]))
+        await replica.offline(false)
+        try await reopened.synchronize(with: replica)
+        try await peer.synchronize(with: replica)
+        let synced = try await peer.list()
+        XCTAssertEqual(synced, offline)
+        await replica.offline(true)
+        try await reopened.change(id, labels: nil)
+        let remaining = try await reopened.list()
+        XCTAssertEqual(remaining.map(\.id), [first])
+        XCTAssertEqual(remaining.first?.labels, Labels(name: "ancienne.txt"))
+        await replica.offline(false)
+        try await reopened.synchronize(with: replica)
+        try await peer.synchronize(with: replica)
+        let final = try await peer.list()
+        XCTAssertEqual(final, remaining)
+    }
+
     func testForeignVaultCannotReadCloud() async throws {
         let cloud = MemoryReplica(root: location("."))
         let a = try VaultStore(root: location("a"), keys: VaultKeys(), create: true)

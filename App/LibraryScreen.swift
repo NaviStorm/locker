@@ -13,6 +13,8 @@ struct LibraryScreen: View {
     @State private var importer = false
     @State private var scanner = false
     @State private var versionParent: UUID?
+    @State private var pendingRename: ListedDocument?
+    @State private var documentName = ""
     @State private var pendingDelete: ListedDocument?
 
     private var filtered: [ListedDocument] {
@@ -49,6 +51,7 @@ struct LibraryScreen: View {
                             }
                         } icon: { Image(systemName: "doc.text").foregroundStyle(.tint) }
                     }
+                    .contextMenu { documentActions(for: item) }
                 }
             }
             .overlay {
@@ -100,7 +103,7 @@ struct LibraryScreen: View {
                 DocumentScreen(model: model, item: item, select: { selection = $0 }, addVersion: {
                     versionParent = item.id
                     importer = true
-                }, remove: { pendingDelete = item }).id(item.id)
+                }, actions: documentActions(for: item)).id(item.id)
             } else {
                 ContentUnavailableView("Sélectionnez un document", systemImage: "doc.text.magnifyingglass")
             }
@@ -152,12 +155,49 @@ struct LibraryScreen: View {
                 Button("J’ai conservé le code") { model.recovery = nil }.buttonStyle(.borderedProminent)
             }.padding(28).frame(idealWidth: 430)
         }
-        .confirmationDialog("Supprimer cette version du coffre ?", isPresented: Binding(get: { pendingDelete != nil },
-            set: { if !$0 { pendingDelete = nil } }), presenting: pendingDelete) { item in
+        .alert("Renommer le document", isPresented: Binding(get: { pendingRename != nil },
+            set: { if !$0 { pendingRename = nil } }), presenting: pendingRename) { item in
+            TextField("Nom du fichier", text: $documentName)
+            Button("Renommer") {
+                let name = documentName
+                model.perform { try await $0.renameDocument(item.id, to: name) }
+            }.disabled(documentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Annuler", role: .cancel) {}
+        }
+        .confirmationDialog("Supprimer « \(pendingDelete?.labels.name ?? "") » ?", isPresented: Binding(get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible, presenting: pendingDelete) { item in
             Button("Supprimer", role: .destructive) {
-                selection = nil
-                model.perform { try await $0.change(item.id, labels: nil) }
+                model.perform { store in
+                    try await store.change(item.id, labels: nil)
+                    if selection == item.id { selection = nil }
+                }
             }
+            Button("Annuler", role: .cancel) {}
+        } message: { item in
+            if model.documents.contains(where: { $0.lineage == item.lineage && $0.id != item.id }) {
+                Text("La suppression concerne uniquement la version sélectionnée.")
+            }
+        }
+    }
+
+    @ViewBuilder private func documentActions(for item: ListedDocument) -> some View {
+        Button("Renommer…", systemImage: "pencil") {
+            documentName = item.labels.name
+            pendingRename = item
+        }
+        Menu("Déplacer vers", systemImage: "folder") {
+            Button("Racine du coffre") { move(item, to: "") }.disabled(item.labels.folder.isEmpty)
+            ForEach(model.library.folders, id: \.self) { destination in
+                Button(destination) { move(item, to: destination) }.disabled(destination == item.labels.folder)
+            }
+        }
+        Button("Supprimer…", systemImage: "trash", role: .destructive) { pendingDelete = item }
+    }
+
+    private func move(_ item: ListedDocument, to destination: String) {
+        model.perform { store in
+            try await store.moveDocument(item.id, to: destination)
+            if selection == item.id && !folder.isEmpty && folder != destination { selection = nil }
         }
     }
 }

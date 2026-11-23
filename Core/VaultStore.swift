@@ -227,6 +227,33 @@ actor VaultStore {
         }
     }
 
+    private func labelsForDocument(_ id: UUID) throws -> Labels {
+        try gate.check()
+        guard let document = entries[id]?.document, document.isFolder != true else { throw VaultError.unavailable }
+        return document.labels
+    }
+
+    func renameDocument(_ id: UUID, to proposed: String) throws {
+        var labels = try labelsForDocument(id)
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            throw TransportError(message: "Saisissez un nom de fichier valide.")
+        }
+        guard name != labels.name else { return }
+        labels.name = name
+        try change(id, labels: labels)
+    }
+
+    func moveDocument(_ id: UUID, to folder: String) throws {
+        var labels = try labelsForDocument(id)
+        guard folder != labels.folder else { return }
+        if !folder.isEmpty, try !library().folders.contains(folder) {
+            throw TransportError(message: "Ce dossier n’existe plus dans le coffre.")
+        }
+        labels.folder = folder
+        try change(id, labels: labels)
+    }
+
     func change(_ id: UUID, labels: Labels?) throws {
         try gate.check()
         guard var entry = entries[id], entry.document != nil else { throw VaultError.unavailable }
