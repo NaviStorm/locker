@@ -5,6 +5,8 @@ struct LibraryScreen: View {
     @Bindable var model: LockerModel
     @State private var query = ""
     @State private var folder = ""
+    @State private var creatingFolder = false
+    @State private var folderName = ""
     @State private var category = ""
     @State private var selection: UUID?
     @State private var settings = false
@@ -21,9 +23,20 @@ struct LibraryScreen: View {
                     .contains { $0.localizedStandardContains(query) })
         }
     }
+    private var showsFolders: Bool {
+        folder.isEmpty && query.isEmpty && category.isEmpty && !model.library.folders.isEmpty
+    }
+
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
+                if showsFolders {
+                    Section("Dossiers") {
+                        ForEach(model.library.folders, id: \.self) { name in
+                            Button { folder = name } label: { Label(name, systemImage: "folder") }
+                        }
+                    }
+                }
                 ForEach(filtered) { item in
                     NavigationLink(value: item.id) {
                         Label {
@@ -39,16 +52,26 @@ struct LibraryScreen: View {
                 }
             }
             .overlay {
-                if filtered.isEmpty {
+                if filtered.isEmpty && !showsFolders {
                     ContentUnavailableView(query.isEmpty ? "Aucun document" : "Aucun résultat",
                                            systemImage: query.isEmpty ? "folder" : "magnifyingglass")
                 }
             }
             .searchable(text: $query, prompt: "Rechercher dans le coffre")
-            .navigationTitle(model.familyMode ? "Coffre familial" : "Coffre personnel")
+            .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
+            .onChange(of: folder) { selection = nil }
             .toolbar {
                 ToolbarItemGroup {
+                    if !folder.isEmpty {
+                        Button("Retour au coffre", systemImage: "chevron.backward") { folder = "" }
+                    }
                     Menu {
+                        if folder.isEmpty {
+                            Button("Nouveau dossier", systemImage: "folder.badge.plus") {
+                                folderName = ""
+                                creatingFolder = true
+                            }
+                        }
                         Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }
                         #if os(iOS)
                         if ScanScreen.supported { Button("Numériser", systemImage: "document.viewfinder") { scanner = true } }
@@ -59,7 +82,7 @@ struct LibraryScreen: View {
                     Menu {
                         Picker("Dossier", selection: $folder) {
                             Text("Tous les dossiers").tag("")
-                            ForEach(Array(Set(model.documents.map(\.labels.folder))).filter { !$0.isEmpty }.sorted(), id: \.self) { Text($0).tag($0) }
+                            ForEach(model.library.folders, id: \.self) { Text($0).tag($0) }
                         }
                         Picker("Catégorie", selection: $category) {
                             Text("Toutes les catégories").tag("")
@@ -86,23 +109,36 @@ struct LibraryScreen: View {
             switch result {
             case let .success(urls):
                 let parent = versionParent
+                let destination = folder
                 model.perform { store in
                     for url in urls {
                         let access = url.startAccessingSecurityScopedResource()
                         defer { if access { url.stopAccessingSecurityScopedResource() } }
-                        _ = try await store.importCoordinated(url, parent: parent)
+                        _ = try await store.importCoordinated(url, parent: parent, folder: destination)
                     }
                 }
             case let .failure(error):
                 if (error as NSError).code != NSUserCancelledError { model.problem = error.localizedDescription }
             }
         }
-        .sheet(isPresented: $settings) { SettingsScreen(model: model) }
+        .alert("Nouveau dossier", isPresented: $creatingFolder) {
+            TextField("Nom du dossier", text: $folderName)
+            Button("Créer") {
+                let name = folderName
+                model.perform { store in
+                    folder = try await store.createFolder(name)
+                    category = ""
+                    query = ""
+                }
+            }.disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Annuler", role: .cancel) {}
+        }
+        .lockerPanel(isPresented: $settings) { SettingsScreen(model: model) }
         .sheet(isPresented: $scanner) {
             ScanScreen { result in
                 scanner = false
                 switch result {
-                case let .success(scan): model.perform { _ = try await $0.importData(scan.bytes, name: scan.name) }
+                case let .success(scan): model.perform { _ = try await $0.importData(scan.bytes, name: scan.name, folder: folder) }
                 case let .failure(error): model.problem = error.localizedDescription
                 }
             } cancel: { scanner = false }

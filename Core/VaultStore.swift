@@ -18,6 +18,7 @@ struct Document: Codable, Equatable {
     var parent: UUID?
     var created: Date?
     var previousLabels: [UUID: Labels]?
+    var isFolder: Bool?
 }
 
 struct Entry: Codable, Equatable {
@@ -54,6 +55,11 @@ struct ListedDocument: Identifiable, Equatable {
     let id: UUID
     let labels: Labels
     let size: Int64
+}
+
+struct VaultLibrary {
+    var documents: [ListedDocument] = []
+    var folders: [String] = []
 }
 
 struct Catalog: Codable {
@@ -149,32 +155,58 @@ actor VaultStore {
     }
 
     func list() throws -> [ListedDocument] {
+        try library().documents
+    }
+
+    func library() throws -> VaultLibrary {
         try gate.check()
-        return entries.values.compactMap { entry in
-            entry.document.map { ListedDocument(lineage: $0.lineage ?? entry.id, created: $0.created, id: entry.id, labels: $0.labels, size: $0.size) }
-        }.sorted { $0.labels.name.localizedStandardCompare($1.labels.name) == .orderedAscending }
+        var folders = Set<String>()
+        var documents = [ListedDocument]()
+        for entry in entries.values {
+            guard let document = entry.document else { continue }
+            if document.isFolder == true {
+                folders.insert(document.labels.name)
+            } else {
+                if !document.labels.folder.isEmpty { folders.insert(document.labels.folder) }
+                documents.append(ListedDocument(lineage: entry.scope, created: document.created, id: entry.id,
+                                                labels: document.labels, size: document.size))
+            }
+        }
+        return VaultLibrary(documents: documents.sorted { $0.labels.name.localizedStandardCompare($1.labels.name) == .orderedAscending },
+                            folders: folders.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+    }
+
+    func createFolder(_ proposed: String) throws -> String {
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw TransportError(message: "Saisissez un nom de dossier.") }
+        guard try !library().folders.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else {
+            throw TransportError(message: "Un dossier porte déjà ce nom.")
+        }
+        _ = try add(name: name, isFolder: true) { Data() }
+        return name
     }
 
     @discardableResult
-    func importFile(_ url: URL, versionOf parent: UUID? = nil) throws -> UUID {
+    func importFile(_ url: URL, versionOf parent: UUID? = nil, folder: String = "") throws -> UUID {
         try gate.check()
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
-        return try add(name: url.lastPathComponent, parent: parent) { try input.read(upToCount: BlockCipher.chunk) ?? Data() }
+        return try add(name: url.lastPathComponent, parent: parent, folder: folder) { try input.read(upToCount: BlockCipher.chunk) ?? Data() }
     }
 
     @discardableResult
-    func importData(_ data: Data, name: String) throws -> UUID {
+    func importData(_ data: Data, name: String, folder: String = "") throws -> UUID {
         var offset = 0
-        return try add(name: name) {
+        return try add(name: name, folder: folder) {
             let end = min(data.count, offset + BlockCipher.chunk)
             defer { offset = end }
             return data.subdata(in: offset..<end)
         }
     }
 
-    private func add(name: String, parent: UUID? = nil, read: () throws -> Data) throws -> UUID {
-        if let parent, entries[parent]?.document == nil { throw VaultError.unavailable }
+    private func add(name: String, parent: UUID? = nil, folder: String = "", isFolder: Bool? = nil, read: () throws -> Data) throws -> UUID {
+        let original = parent.flatMap { entries[$0]?.document }
+        if parent != nil && (original == nil || original?.isFolder == true) { throw VaultError.unavailable }
         let nonce = UUID()
         let parentScope = parent.flatMap { entries[$0]?.scope }
         let id = family.map { FamilyEvent.scopedID(author: $0.principal, nonce: nonce, lineage: parentScope) } ?? UUID()
@@ -184,9 +216,9 @@ actor VaultStore {
         let url = blob(id)
         let size = try BlockCipher.encrypt(id: id, key: key, to: url, gate: gate, read: read)
         do {
-            let document = Document(labels: Labels(name: name), key: key.withUnsafeBytes { Data($0) }, size: size,
+            let document = Document(labels: Labels(name: name, folder: original?.labels.folder ?? folder), key: key.withUnsafeBytes { Data($0) }, size: size,
                                     originAuthor: family?.principal, originNonce: nonce, lineage: scope,
-                                    parent: parent, created: Date())
+                                    parent: parent, created: Date(), isFolder: isFolder)
             try replace(Entry(id: id, generation: 1, revision: UUID(), document: document))
             return id
         } catch {

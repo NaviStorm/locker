@@ -110,7 +110,15 @@ private struct EditLabels: View {
         NavigationStack {
             Form {
                 TextField("Nom", text: $labels.name)
-                TextField("Dossier", text: $labels.folder)
+                HStack {
+                    TextField("Dossier", text: $labels.folder)
+                    Menu("Choisir un dossier", systemImage: "folder") {
+                        Button("Sans dossier") { labels.folder = "" }
+                        ForEach(model.library.folders, id: \.self) { name in
+                            Button(name) { labels.folder = name }
+                        }
+                    }.labelStyle(.iconOnly)
+                }
                 TextField("Catégorie", text: $labels.category)
                 TextField("Description", text: $labels.notes, axis: .vertical)
             }.formStyle(.grouped).navigationTitle("Fiche du document")

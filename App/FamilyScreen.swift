@@ -2,7 +2,6 @@ import SwiftUI
 
 struct FamilyScreen: View {
     let model: LockerModel
-    @Environment(\.dismiss) private var dismiss
     @State private var members: [Member] = []
     @State private var principal = ""
     @State private var mine: PublicIdentity?
@@ -123,7 +122,7 @@ struct FamilyScreen: View {
                 if working { ProgressView() }
             }
             .formStyle(.grouped).navigationTitle("Partage familial")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+            .modifier(VaultDismissToolbar())
             .disabled(working)
             .confirmationDialog("Retirer l’autorisation de cet appareil ?", isPresented: Binding(get: { revoke != nil },
                 set: { if !$0 { revoke = nil } }), presenting: revoke) { member in
@@ -151,7 +150,7 @@ struct FamilyScreen: View {
             do {
                 try await operation(store)
                 try await refresh(store)
-                model.documents = try await store.list()
+                model.library = try await store.library()
                 model.sync()
             } catch {
                 try? await refresh(store)

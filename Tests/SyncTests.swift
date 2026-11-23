@@ -66,6 +66,39 @@ final class SyncTests: VaultTestCase {
         XCTAssertNil(deleted?.file)
     }
 
+    func testFoldersSurviveOfflineReopeningAndSync() async throws {
+        let keys = VaultKeys()
+        let root = location("origine")
+        let store = try VaultStore(root: root, keys: keys, create: true)
+        let name = try await store.createFolder("  Archives fictives  ")
+        XCTAssertEqual(name, "Archives fictives")
+        for invalid in ["  ", "archives fictives"] {
+            do { _ = try await store.createFolder(invalid); XCTFail("Nom accepté") } catch {}
+        }
+        let scan = try await store.importData(Data([1]), name: "scan", folder: name)
+        let source = location("document.txt")
+        try Data([2]).write(to: source)
+        let version = try await store.importFile(source, versionOf: scan)
+        let imported = try await store.importCoordinated(source, parent: nil, folder: name)
+        let library = try await store.library()
+        XCTAssertEqual(library.documents.map(\.labels.folder), [name, name, name])
+        try await store.change(scan, labels: Labels(name: "scan", folder: "Ancien classement"))
+        try await store.change(version, labels: nil)
+        try await store.change(imported, labels: nil)
+        let reopened = try VaultStore(root: root, keys: keys)
+        let offline = try await reopened.library()
+        XCTAssertEqual(offline.folders, ["Ancien classement", name])
+        XCTAssertEqual(offline.documents.count, 1)
+        XCTAssertNil(try Data(contentsOf: root.appendingPathComponent("catalog.v1")).range(of: Data(name.utf8)))
+        let replica = MemoryReplica(root: location("."))
+        let other = try VaultStore(root: location("copie"), keys: keys, create: true)
+        try await reopened.synchronize(with: replica)
+        try await other.synchronize(with: replica)
+        let synced = try await other.library()
+        XCTAssertEqual(synced.folders, offline.folders)
+        XCTAssertEqual(synced.documents, offline.documents)
+    }
+
     func testForeignVaultCannotReadCloud() async throws {
         let cloud = MemoryReplica(root: location("."))
         let a = try VaultStore(root: location("a"), keys: VaultKeys(), create: true)

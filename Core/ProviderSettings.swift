@@ -56,7 +56,13 @@ extension VaultStore {
         try gate.authorized { try VaultFiles.save(data, to: root.appendingPathComponent("transport.v1")) }
     }
 
-    private func credentialAccount(_ config: ProviderSettings) -> String {
+    func hasSavedWebDAVPassword(for config: ProviderSettings) throws -> Bool {
+        try gate.check()
+        guard config.provider == .webdav else { return false }
+        return try ProviderCredential(account: credentialAccount(config)).exists()
+    }
+
+    func credentialAccount(_ config: ProviderSettings) -> String {
         // Bind a saved password to its server and user; editing a URL must never forward an old password.
         let fields = [keys.identifier, config.provider.rawValue, config.endpoint, config.username, config.appKey]
         return SHA256.hash(data: (try? JSONEncoder().encode(fields)) ?? Data()).map { String(format: "%02x", $0) }.joined()
@@ -107,9 +113,10 @@ extension VaultStore {
 
 struct ProviderCredential {
     let account: String
+    var serviceSuffix = ".transport"
     var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecUseDataProtectionKeychain as String: true,
-         kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "Locker") + ".transport",
+         kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "Locker") + serviceSuffix,
          kSecAttrAccount as String: account, kSecAttrSynchronizable as String: false]
     }
 
@@ -122,6 +129,13 @@ struct ProviderCredential {
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw KeychainFailure(status: status) }
+    }
+
+    func exists() throws -> Bool {
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess else { throw KeychainFailure(status: status) }
+        return true
     }
 
     func read() throws -> Data {

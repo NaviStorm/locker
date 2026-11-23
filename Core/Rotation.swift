@@ -42,7 +42,7 @@ extension VaultStore {
                                           using: newKey, to: ciphertext, gate: gate)
                 staged.append(ciphertext)
                 let replacement = Document(labels: info.labels, key: newKey.withUnsafeBytes { Data($0) }, size: info.size,
-                    originAuthor: state.principal, originNonce: nonce, lineage: old.scope, parent: id, created: info.created, previousLabels: info.previousLabels)
+                    originAuthor: state.principal, originNonce: nonce, lineage: old.scope, parent: id, created: info.created, previousLabels: info.previousLabels, isFolder: info.isFolder)
                 updated[target] = Entry(id: target, generation: 1, revision: UUID(), document: replacement)
                 guard old.generation < UInt64.max else { throw VaultError.damaged }
                 updated[id] = Entry(id: id, generation: old.generation + 1, revision: UUID(), document: nil, tombstoneScope: old.scope,
@@ -79,7 +79,7 @@ extension VaultStore {
         var updated = entry
         updated.document = Document(labels: info.labels, key: key.withUnsafeBytes { Data($0) }, size: info.size,
             originAuthor: info.originAuthor, originNonce: info.originNonce, lineage: info.lineage, parent: info.parent, created: info.created,
-            previousLabels: info.previousLabels)
+            previousLabels: info.previousLabels, isFolder: info.isFolder)
         do { try replace(updated) }
         catch { try? FileManager.default.removeItem(at: dest); throw error }
     }

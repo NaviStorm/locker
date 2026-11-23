@@ -1,8 +1,97 @@
 #if !SWIFT_PACKAGE
 import XCTest
+#if targetEnvironment(simulator)
+import Security
+import SwiftUI
+#endif
 @testable import Locker
 
 final class AppSessionTests: VaultTestCase {
+    #if targetEnvironment(simulator)
+    @MainActor func testClosedDuoReturnButtons() async throws {
+        guard #available(iOS 27.1, *),
+              ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
+            throw XCTSkip("Nécessite un simulateur iPhone Duo.")
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("navigation"))
+        let screens = [("Réglages du coffre", AnyView(SettingsScreen(model: model))),
+                       ("Partage familial", AnyView(FamilyScreen(model: model)))]
+        for (name, screen) in screens {
+            var closed: Bool?
+            let host = UIHostingController(rootView: screen.onHingeChange { _, context in
+                closed = context.hinge?.status == .closed
+            })
+            host.modalPresentationStyle = .fullScreen
+            presenter.present(host, animated: false)
+            defer { host.dismiss(animated: false) }
+            var back: UIView?
+            for _ in 0..<40 {
+                try await Task.sleep(for: .milliseconds(50))
+                func findBack(_ view: UIView) -> UIView? {
+                    if view.accessibilityLabel == "Retour" { return view }
+                    return view.subviews.lazy.compactMap { findBack($0) }.first
+                }
+                back = findBack(host.view.window ?? host.view)
+                if back != nil { break }
+            }
+            let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            }
+            let capture = XCTAttachment(image: image)
+            capture.name = name
+            capture.lifetime = .keepAlways
+            add(capture)
+            if closed == false { throw XCTSkip("Replier le simulateur pour vérifier le retour latéral.") }
+            XCTAssertEqual(closed, true, name)
+            let button = try XCTUnwrap(back, name)
+            let frame = button.convert(button.bounds, to: host.view)
+            XCTAssertLessThan(min(frame.midX, host.view.bounds.width - frame.midX), 55, name)
+        }
+    }
+
+    @MainActor func testRenameSurvivesLockAndRelaunch() async throws {
+        let base = location("coffres")
+        let slot = UUID().uuidString
+        let store = try VaultStore(root: base.appendingPathComponent(slot), keys: VaultKeys(), create: true)
+        defer { SecItemDelete(LockerModel.nameItem(slot).query as CFDictionary) }
+        let model = LockerModel(base: base)
+        try await model.adoptRotated(store, slotID: slot, code: "fictif")
+        XCTAssertThrowsError(try model.renameVault("   "))
+        try model.renameVault("  Test personnel  ")
+        XCTAssertEqual(model.vaultTitle, "Test personnel")
+        model.lock()
+        XCTAssertThrowsError(try model.renameVault("Autre"))
+        let reopened = LockerModel(base: base)
+        XCTAssertEqual(reopened.slot, slot)
+        XCTAssertEqual(reopened.vaultNames[slot], "Test personnel")
+    }
+
+    func testSavedPasswordBelongsToSelectedNASAndAccount() async throws {
+        let store = try VaultStore(root: location("test-nas"), keys: VaultKeys(), create: true)
+        var config = ProviderSettings(provider: .webdav, endpoint: "https://nas.invalid/Documents/", username: "test")
+        let initial = try await store.hasSavedWebDAVPassword(for: config)
+        XCTAssertFalse(initial)
+        let account = await store.credentialAccount(config)
+        defer { SecItemDelete(ProviderCredential(account: account).query as CFDictionary) }
+        try await store.configure(config, credential: "mot-de-passe-fictif")
+        try await store.configure(config, credential: nil)
+        let saved = try await store.hasSavedWebDAVPassword(for: config)
+        XCTAssertTrue(saved)
+        config.username = "autre"
+        let otherUser = try await store.hasSavedWebDAVPassword(for: config)
+        XCTAssertFalse(otherUser)
+        config.username = "test"
+        config.endpoint = "https://autre.invalid/Documents/"
+        let otherServer = try await store.hasSavedWebDAVPassword(for: config)
+        XCTAssertFalse(otherServer)
+        store.gate.revoke()
+        do { _ = try await store.hasSavedWebDAVPassword(for: config); XCTFail("Coffre verrouillé") }
+        catch VaultError.locked {}
+    }
+    #endif
+
     @MainActor func testAutomaticLockRemovesPreviewAccessAndDisplayedSecrets() async throws {
         let store = try VaultStore(root: location("app"), keys: VaultKeys(), create: true)
         let id = try await store.importData(Data([9]), name: "document-fictif")

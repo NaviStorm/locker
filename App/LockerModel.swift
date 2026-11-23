@@ -4,12 +4,15 @@ import Observation
 
 @MainActor @Observable
 final class LockerModel {
-    let base = URL.applicationSupportDirectory.appendingPathComponent("Locker/vaults", isDirectory: true)
+    let base: URL
+    var vaultNames: [String: String] = [:]
     var slots: [String] = []
     var slot = ""
     var store: VaultStore?
     var familyMode = false
-    var documents: [ListedDocument] = []
+    var library = VaultLibrary()
+    var documents: [ListedDocument] { library.documents }
+    var vaultTitle: String { vaultNames[slot] ?? (familyMode ? "Coffre familial" : "Coffre personnel") }
     var opening = false
     var repairSelected = false
     var problem: String?
@@ -26,21 +29,38 @@ final class LockerModel {
     @ObservationIgnored private var lastActivity = ContinuousClock.now
     @ObservationIgnored private var nextSync = ContinuousClock.now
 
-    init() {
+    init(base: URL = URL.applicationSupportDirectory.appendingPathComponent("Locker/vaults", isDirectory: true)) {
+        self.base = base
         if timeout <= 0 { timeout = 120 }
         slots = ((try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? [])
             .filter { UUID(uuidString: $0) != nil }.sorted()
+        for id in slots {
+            if let bytes = try? Self.nameItem(id).read() { vaultNames[id] = String(data: bytes, encoding: .utf8) }
+        }
         slot = slots.first ?? ""
     }
 
     func adoptRotated(_ session: VaultStore, slotID: String, code: String) async throws {
         accessGate = session.gate
-        let list = try await session.list()
+        let list = try await session.library()
         try session.gate.check()
         slot = slotID
         store = session
-        documents = list
+        library = list
         recovery = code
+        activity()
+    }
+
+    static func nameItem(_ slot: String) -> ProviderCredential {
+        ProviderCredential(account: slot, serviceSuffix: ".vault-name")
+    }
+
+    func renameVault(_ proposed: String) throws {
+        guard let store else { throw VaultError.locked }
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw TransportError(message: "Saisissez un nom de coffre.") }
+        try store.gate.authorized { try Self.nameItem(slot).save(Data(name.utf8)) }
+        vaultNames[slot] = name
         activity()
     }
 
@@ -60,7 +80,7 @@ final class LockerModel {
         accessGate = nil
         store = nil
         familyMode = false
-        documents = []
+        library = VaultLibrary()
         opening = false
         syncing = false
         configuration = ProviderSettings()
@@ -91,7 +111,7 @@ final class LockerModel {
                 let session = try await Task.detached {
                     try VaultAccess.open(mode, at: root, device: device, context: auth, gate: gate)
                 }.value
-                let list = try await session.list()
+                let list = try await session.library()
                 let shared = await session.family != nil
                 let config: ProviderSettings
                 var transportIssue: String?
@@ -105,7 +125,7 @@ final class LockerModel {
                 try gate.check()
                 slot = selected
                 if !slots.contains(selected) { slots.append(selected) }
-                documents = list
+                library = list
                 configuration = config
                 problem = transportIssue
                 recovery = code
@@ -123,9 +143,9 @@ final class LockerModel {
         Task {
             do {
                 try await operation(session)
-                let updated = try await session.list()
+                let updated = try await session.library()
                 guard store === session else { return }
-                documents = updated
+                library = updated
                 nextSync = .now
             } catch { if store === session { problem = error.localizedDescription } }
         }
@@ -138,15 +158,15 @@ final class LockerModel {
         syncTask = Task {
             do {
                 try await session.syncConfigured()
-                let updated = try await session.list()
+                let updated = try await session.library()
                 guard store === session, !Task.isCancelled else { return }
-                documents = updated
+                library = updated
                 syncStatus = "À jour · " + Date.now.formatted(date: .omitted, time: .shortened)
             } catch {
                 guard store === session, !Task.isCancelled else { return }
-                let refreshed = try? await session.list()
+                let refreshed = try? await session.library()
                 guard store === session, !Task.isCancelled else { return }
-                if let refreshed { documents = refreshed }
+                if let refreshed { library = refreshed }
                 syncStatus = "\(provider.rawValue) en attente · \(error.localizedDescription)"
             }
             syncing = false

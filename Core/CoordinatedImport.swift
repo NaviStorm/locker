@@ -1,11 +1,11 @@
 import Foundation
 
 extension VaultStore {
-    func importCoordinated(_ url: URL, parent: UUID?) throws -> UUID {
+    func importCoordinated(_ url: URL, parent: UUID?, folder: String = "") throws -> UUID {
         var coordinationError: NSError?
         var outcome: Result<UUID, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { available in
-            outcome = Result { try importFile(available, versionOf: parent) }
+            outcome = Result { try importFile(available, versionOf: parent, folder: folder) }
         }
         if let coordinationError { throw coordinationError }
         guard let outcome else { throw VaultError.unavailable }
