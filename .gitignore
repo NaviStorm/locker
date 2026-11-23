@@ -1,0 +1,6 @@
+.build/
+.build-*/
+DerivedData/
+.validation/
+xcuserdata/
+.DS_Store
