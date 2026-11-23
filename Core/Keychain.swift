@@ -15,10 +15,11 @@ struct KeychainFailure: LocalizedError {
 }
 
 struct DeviceKeychain: DeviceKeyAccess {
+    var account = "root-v1"
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "Locker") + ".vault",
-         kSecAttrAccount as String: "root-v1",
+         kSecAttrAccount as String: account,
          kSecUseDataProtectionKeychain as String: true,
          kSecAttrSynchronizable as String: false]
     }
@@ -75,7 +76,7 @@ enum VaultAccess {
             }
             if existing {
                 // Prove possession before changing the local keychain.
-                _ = try VaultStore.unpack([UUID: Entry].self, data: Data(contentsOf: catalog), keys: keys, purpose: "catalog")
+                _ = try VaultStore.readCatalog(catalog, keys: keys)
             }
             try gate.check()
             try device.install(keys, context: context)

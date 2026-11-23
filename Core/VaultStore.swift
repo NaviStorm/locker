@@ -12,6 +12,10 @@ struct Document: Codable, Equatable {
     var labels: Labels
     let key: Data
     let size: Int64
+    var lineage: UUID?
+    var parent: UUID?
+    var created: Date?
+    var previousLabels: [UUID: Labels]?
 }
 
 struct Entry: Codable, Equatable {
@@ -19,6 +23,17 @@ struct Entry: Codable, Equatable {
     var generation: UInt64
     var revision: UUID
     var document: Document?
+
+    func mergingLabels(from other: Entry) -> Entry {
+        guard document != nil, let old = other.document else { return self }
+        var merged = self
+        var history = document?.previousLabels ?? [:]
+        history.merge(old.previousLabels ?? [:]) { current, _ in current }
+        if revision != other.revision { history[other.revision] = old.labels }
+        history.removeValue(forKey: revision)
+        merged.document?.previousLabels = history.isEmpty ? nil : history
+        return merged
+    }
 
     func wins(over other: Entry) -> Bool {
         if (document == nil) != (other.document == nil) { return document == nil }
@@ -28,9 +43,16 @@ struct Entry: Codable, Equatable {
 }
 
 struct ListedDocument: Identifiable, Equatable {
+    let lineage: UUID
+    let created: Date?
     let id: UUID
     let labels: Labels
     let size: Int64
+}
+
+struct Catalog: Codable {
+    var entries: [UUID: Entry]
+    var pending: [UUID: UUID]
 }
 
 actor VaultStore {
@@ -38,6 +60,7 @@ actor VaultStore {
     let root: URL
     let keys: VaultKeys
     private(set) var entries: [UUID: Entry]
+    private(set) var pending: [UUID: UUID]
 
     init(root: URL, keys: VaultKeys, create: Bool = false, gate: SessionGate = SessionGate()) throws {
         self.root = root
@@ -47,16 +70,27 @@ actor VaultStore {
         if create {
             guard !FileManager.default.fileExists(atPath: catalog.path) else { throw VaultError.exists }
             try VaultFiles.directory(root)
-            let bytes = try Self.pack([UUID: Entry](), keys: keys, purpose: "catalog")
+            let bytes = try Self.pack(Catalog(entries: [:], pending: [:]), keys: keys, purpose: "catalog")
             try VaultFiles.save(bytes, to: catalog)
         }
-        entries = try Self.unpack([UUID: Entry].self, data: Data(contentsOf: catalog), keys: keys, purpose: "catalog")
+        let state = try Self.readCatalog(catalog, keys: keys)
+        entries = state.entries
+        pending = state.pending
         // A crash can leave encrypted content without a committed catalogue reference.
         for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             where file.pathExtension == "blob" {
             if let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent), entries[id]?.document == nil {
                 try FileManager.default.removeItem(at: file)
             }
+        }
+    }
+
+    static func readCatalog(_ url: URL, keys: VaultKeys) throws -> Catalog {
+        let bytes = try Data(contentsOf: url)
+        do { return try unpack(Catalog.self, data: bytes, keys: keys, purpose: "catalog") }
+        catch is DecodingError {
+            let old = try unpack([UUID: Entry].self, data: bytes, keys: keys, purpose: "catalog")
+            return Catalog(entries: old, pending: old.mapValues(\.revision))
         }
     }
 
@@ -73,14 +107,28 @@ actor VaultStore {
 
     func blob(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString + ".blob") }
 
-    func replace(_ entry: Entry) throws {
-        var updated = entries
-        updated[entry.id] = entry
-        let data = try Self.pack(updated, keys: keys, purpose: "catalog")
+    func acknowledge(_ id: UUID, revision: UUID?) throws {
+        guard let revision, pending[id] == revision else { return }
+        var queue = pending
+        queue.removeValue(forKey: id)
+        try commit(entries, queue)
+    }
+
+    private func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID]) throws {
+        let data = try Self.pack(Catalog(entries: updated, pending: queue), keys: keys, purpose: "catalog")
         try gate.authorized {
             try VaultFiles.save(data, to: root.appendingPathComponent("catalog.v1"))
             entries = updated
+            pending = queue
         }
+    }
+
+    func replace(_ entry: Entry, enqueue: Bool = true) throws {
+        var updated = entries
+        updated[entry.id] = entry
+        var queue = pending
+        queue[entry.id] = enqueue ? entry.revision : nil
+        try commit(updated, queue)
         if entry.document == nil, FileManager.default.fileExists(atPath: blob(entry.id).path) {
             try FileManager.default.removeItem(at: blob(entry.id))
         }
@@ -89,16 +137,16 @@ actor VaultStore {
     func list() throws -> [ListedDocument] {
         try gate.check()
         return entries.values.compactMap { entry in
-            entry.document.map { ListedDocument(id: entry.id, labels: $0.labels, size: $0.size) }
+            entry.document.map { ListedDocument(lineage: $0.lineage ?? entry.id, created: $0.created, id: entry.id, labels: $0.labels, size: $0.size) }
         }.sorted { $0.labels.name.localizedStandardCompare($1.labels.name) == .orderedAscending }
     }
 
     @discardableResult
-    func importFile(_ url: URL) throws -> UUID {
+    func importFile(_ url: URL, versionOf parent: UUID? = nil) throws -> UUID {
         try gate.check()
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
-        return try add(name: url.lastPathComponent) { try input.read(upToCount: BlockCipher.chunk) ?? Data() }
+        return try add(name: url.lastPathComponent, parent: parent) { try input.read(upToCount: BlockCipher.chunk) ?? Data() }
     }
 
     @discardableResult
@@ -111,13 +159,16 @@ actor VaultStore {
         }
     }
 
-    private func add(name: String, read: () throws -> Data) throws -> UUID {
+    private func add(name: String, parent: UUID? = nil, read: () throws -> Data) throws -> UUID {
+        if let parent, entries[parent]?.document == nil { throw VaultError.unavailable }
         let id = UUID()
         let key = SymmetricKey(size: .bits256)
         let url = blob(id)
         let size = try BlockCipher.encrypt(id: id, key: key, to: url, gate: gate, read: read)
         do {
-            let document = Document(labels: Labels(name: name), key: key.withUnsafeBytes { Data($0) }, size: size)
+            let document = Document(labels: Labels(name: name), key: key.withUnsafeBytes { Data($0) }, size: size,
+                                    lineage: parent.flatMap { entries[$0]?.document?.lineage ?? $0 } ?? id,
+                                    parent: parent, created: Date())
             try replace(Entry(id: id, generation: 1, revision: UUID(), document: document))
             return id
         } catch {
@@ -129,7 +180,13 @@ actor VaultStore {
     func change(_ id: UUID, labels: Labels?) throws {
         try gate.check()
         guard var entry = entries[id], entry.document != nil else { throw VaultError.unavailable }
-        if let labels { entry.document?.labels = labels } else { entry.document = nil }
+        if let labels, var document = entry.document {
+            var previous = document.previousLabels ?? [:]
+            previous[entry.revision] = document.labels
+            document.previousLabels = previous
+            document.labels = labels
+            entry.document = document
+        } else { entry.document = nil }
         entry.generation += 1
         entry.revision = UUID()
         try replace(entry)

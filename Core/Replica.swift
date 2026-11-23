@@ -36,12 +36,12 @@ extension VaultStore {
     private func reconcile(_ id: UUID, with replica: VaultReplica) async throws {
         let remote = try await replica.fetch(id, withFile: false)
         try gate.check()
-        let local = entries[id]
+        var local = entries[id]
         let purpose = "sync/" + id.uuidString
         if let remote {
             let incoming = try Self.unpack(Entry.self, data: remote.envelope, keys: keys, purpose: purpose)
             guard incoming.id == id else { throw VaultError.damaged }
-            if incoming == local { return }
+            if incoming == local { try acknowledge(id, revision: local?.revision); return }
             if local == nil || local.map({ incoming.wins(over: $0) }) == true {
                 if let info = incoming.document {
                     if let previous = local?.document {
@@ -54,8 +54,16 @@ extension VaultStore {
                         try receive(file, id: id, info: info)
                     }
                 }
-                try replace(incoming)
-                return
+                let merged = local.map { incoming.mergingLabels(from: $0) } ?? incoming
+                try replace(merged, enqueue: merged != incoming)
+                if merged == incoming { return }
+                local = merged
+            } else if let winner = local {
+                let merged = winner.mergingLabels(from: incoming)
+                if merged != winner {
+                    try replace(merged)
+                    local = merged
+                }
             }
         }
         guard let local else { return }
@@ -65,6 +73,7 @@ extension VaultStore {
                               replacing: remote?.version)
         try gate.check()
         if entries[id] != local { throw ReplicaError.conflict }
+        try acknowledge(id, revision: local.revision)
     }
 
     private func receive(_ source: URL, id: UUID, info: Document) throws {
