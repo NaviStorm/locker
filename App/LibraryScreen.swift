@@ -193,6 +193,13 @@ struct LibraryScreen: View {
                 if (error as NSError).code != NSUserCancelledError { model.problem = error.localizedDescription }
             }
         }
+        .onChange(of: model.pendingArchivePlacement?.id, initial: true) { _, _ in
+            if let files = model.pendingArchivePlacement {
+                folder = ""
+                archiveSelection = files
+                model.pendingArchivePlacement = nil
+            }
+        }
         .sheet(item: $archiveSelection) { files in
             ArchiveDestinationScreen(model: model, files: files, folder: folder)
         }

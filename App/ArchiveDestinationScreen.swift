@@ -22,7 +22,7 @@ enum ArchiveDestination: Hashable {
 struct ArchiveDestinationScreen: View {
     let model: LockerModel
     let files: SelectedImport
-    let folder: String
+    @State private var folder: String
     @Environment(\.dismiss) private var dismiss
     @State private var destination: ArchiveDestination
     @State private var protectNewKey = true
@@ -30,7 +30,7 @@ struct ArchiveDestinationScreen: View {
     init(model: LockerModel, files: SelectedImport, folder: String) {
         self.model = model
         self.files = files
-        self.folder = folder
+        _folder = State(initialValue: model.library.folders.contains(folder) ? folder : "")
         _destination = State(initialValue: .existing(model.slot))
     }
 
@@ -52,18 +52,28 @@ struct ArchiveDestinationScreen: View {
                     if destination == .new {
                         Toggle("Exiger une authentification pour le nouveau coffre", isOn: $protectNewKey)
                     }
-                } footer: {
-                    if destination == .existing(model.slot) && !folder.isEmpty {
-                        Text("Dossier de destination : \(folder)")
-                    } else { Text("Les fichiers seront importés à la racine du coffre choisi et dans les dossiers de l’archive.") }
                 }
-                Button("Décompresser dans ce coffre") {
-                    dismiss()
-                    model.extract(files, to: destination, folder: folder, protectNewKey: protectNewKey)
-                }
-                Button("Importer sans décompresser dans le coffre ouvert") {
-                    dismiss()
-                    model.importOriginals(files, parent: nil, folder: folder)
+
+                if destination == .existing(model.slot) || destination == .new {
+                    Section("Emplacement") {
+                        if destination == .new {
+                            Label("Racine du coffre", systemImage: "folder")
+                        } else {
+                            Picker("Dossier de destination", selection: $folder) {
+                                Text("Racine du coffre").tag("")
+                                ForEach(model.library.folders, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
+                            }
+                        }
+                    }
+                    Button("Décompresser ici", systemImage: "archivebox") { finish(extract: true) }
+                    Button("Importer sans décompresser", systemImage: "doc.badge.plus") { finish(extract: false) }
+                } else if case let .existing(id) = destination {
+                    Button("Ouvrir ce coffre pour choisir l’emplacement") {
+                        dismiss()
+                        model.chooseArchiveFolder(files, in: id)
+                    }
                 }
             }
             .vaultFormStyle()
@@ -71,6 +81,12 @@ struct ArchiveDestinationScreen: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } } }
         }.frame(idealWidth: 480, idealHeight: 420)
     }
+    private func finish(extract: Bool) {
+        dismiss()
+        model.importArchive(files, inNewVault: destination == .new, folder: folder,
+                            extract: extract, protectNewKey: protectNewKey)
+    }
+
 }
 
 extension LockerModel {
@@ -81,25 +97,33 @@ extension LockerModel {
         }
     }
 
-    func extract(_ files: SelectedImport, to destination: ArchiveDestination, folder: String, protectNewKey: Bool = true) {
+    func chooseArchiveFolder(_ files: SelectedImport, in id: String) {
         guard store != nil, !extracting else { return }
-        if destination == .existing(slot) {
-            extractHere(files, folder: folder)
-            return
-        }
-        if case let .existing(id) = destination, !slots.contains(id) {
+        guard slots.contains(id) else {
             problem = "Le coffre de destination est indisponible."
             return
         }
         lock()
-        let afterOpen = { self.extractHere(files, folder: "") }
-        switch destination {
-        case let .existing(id):
-            slot = id
-            open(.unlock, afterOpen: afterOpen)
-        case .new:
-            open(.create, newSlot: true, protectNewKey: protectNewKey, afterOpen: afterOpen)
+        slot = id
+        open(.unlock) { self.pendingArchivePlacement = files }
+    }
+
+    func importArchive(_ files: SelectedImport, inNewVault: Bool, folder: String, extract: Bool,
+                       protectNewKey: Bool = true) {
+        guard store != nil, !extracting else { return }
+        let target = inNewVault ? "" : folder
+        guard target.isEmpty || library.folders.contains(target) else {
+            problem = "Le dossier de destination est indisponible."
+            return
         }
+        let placeFiles = {
+            if extract { self.extractHere(files, folder: target) }
+            else { self.importOriginals(files, parent: nil, folder: target) }
+        }
+        if inNewVault {
+            lock()
+            open(.create, newSlot: true, protectNewKey: protectNewKey, afterOpen: placeFiles)
+        } else { placeFiles() }
     }
 
     private func extractHere(_ files: SelectedImport, folder: String) {

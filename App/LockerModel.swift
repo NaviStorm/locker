@@ -26,6 +26,7 @@ final class LockerModel {
     var documents: [ListedDocument] { library.documents }
     var vaultTitle: String { vaultNames[slot] ?? (familyMode ? "Coffre familial" : "Coffre personnel") }
     var extracting = false
+    var pendingArchivePlacement: SelectedImport?
     var opening = false
     private(set) var changingProtection = false
     private(set) var requiresAuthentication = true
@@ -103,6 +104,7 @@ final class LockerModel {
         library = VaultLibrary()
         opening = false
         extracting = false
+        pendingArchivePlacement = nil
         syncing = false
         configuration = ProviderSettings()
         recovery = nil

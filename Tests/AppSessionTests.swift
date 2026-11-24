@@ -210,7 +210,8 @@ final class AppSessionTests: VaultTestCase {
         let originalRoot = base.appendingPathComponent(originalID)
         let otherRoot = base.appendingPathComponent(otherID)
         let original = try VaultStore(root: originalRoot, keys: keys, create: true)
-        _ = try VaultStore(root: otherRoot, keys: keys, create: true)
+        let other = try VaultStore(root: otherRoot, keys: keys, create: true)
+        _ = try await other.createFolder("Archives")
         var deny = true
         var newProtection: Bool?
         VaultAuthenticationMethod.biometrics.remember(for: otherID)
@@ -230,28 +231,45 @@ final class AppSessionTests: VaultTestCase {
         let zip = location("exemple.zip")
         try XCTUnwrap(Data(base64Encoded: ArchiveTests.zip)).write(to: zip)
         let files = SelectedImport([zip])
-        func settle() async throws {
+        func settle(_ ready: () -> Bool) async throws {
             for _ in 0..<200 {
-                if !model.opening && !model.extracting && (model.problem != nil || !model.documents.isEmpty) { return }
+                if !model.opening && !model.extracting && ready() { return }
                 try await Task.sleep(for: .milliseconds(10))
             }
             XCTFail("Import inachevé")
         }
         try await model.adoptRotated(original, slotID: originalID, code: "fictif")
-        model.extract(files, to: .existing(otherID), folder: "Source")
-        try await settle()
+        model.chooseArchiveFolder(files, in: otherID)
+        try await settle { model.problem != nil }
         XCTAssertNil(model.store)
-        let untouched = try await VaultStore(root: otherRoot, keys: keys).list()
+        XCTAssertNil(model.pendingArchivePlacement)
+        let untouched = try await other.list()
         XCTAssertTrue(untouched.isEmpty)
         deny = false
         model.lock()
         try await model.adoptRotated(VaultStore(root: originalRoot, keys: keys), slotID: originalID, code: "fictif")
-        model.extract(files, to: .existing(otherID), folder: "Source")
-        try await settle()
+        model.chooseArchiveFolder(files, in: otherID)
+        try await settle { model.pendingArchivePlacement != nil }
         XCTAssertEqual(model.slot, otherID)
+        XCTAssertTrue(model.documents.isEmpty)
+        XCTAssertEqual(model.library.folders, ["Archives"])
+        let pending = try XCTUnwrap(model.pendingArchivePlacement)
+        model.pendingArchivePlacement = nil
+        model.importArchive(pending, inNewVault: false, folder: "Archives", extract: true)
+        try await settle { model.documents.count == 2 }
+        XCTAssertEqual(model.library.documents(in: "Archives").map(\.labels.name), ["note.txt"])
+        XCTAssertTrue(model.library.documents(in: "").isEmpty)
+        model.importArchive(files, inNewVault: false, folder: "", extract: true)
+        try await settle { model.documents.count == 4 }
         XCTAssertEqual(model.library.documents(in: "").map(\.labels.name), ["note.txt"])
-        model.extract(files, to: .new, folder: "Source", protectNewKey: false)
-        try await settle()
+        model.importArchive(files, inNewVault: false, folder: "Archives", extract: false)
+        try await settle { model.documents.count == 5 }
+        let archived = try XCTUnwrap(model.library.documents(in: "Archives").first { $0.labels.name == "exemple.zip" })
+        let destinationStore = try XCTUnwrap(model.store)
+        let storedBytes = try await destinationStore.preview(archived.id)
+        XCTAssertEqual(storedBytes, try Data(contentsOf: zip))
+        model.importArchive(files, inNewVault: true, folder: "Archives", extract: true, protectNewKey: false)
+        try await settle { model.slot != otherID && model.documents.count == 2 }
         XCTAssertEqual(newProtection, false)
         XCTAssertEqual(requestedMethods, [.biometrics, .biometrics, .passcode])
         XCTAssertEqual(VaultAuthenticationMethod.preferred(for: otherID), .biometrics)
