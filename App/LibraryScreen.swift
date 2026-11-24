@@ -33,7 +33,7 @@ struct LibraryScreen: View {
         folder.isEmpty && query.isEmpty && category.isEmpty && !model.library.folders.isEmpty
     }
 
-    var body: some View {
+    private var browser: some View {
         NavigationSplitView {
             List(selection: $selection) {
                 if showsFolders {
@@ -70,45 +70,27 @@ struct LibraryScreen: View {
             .onChange(of: selectedDocument?.id) { _, id in
                 if id == nil { selection = nil }
             }
+            #if os(iOS)
             .toolbar {
-                if folder.isEmpty {
-                    ToolbarItem(placement: .navigation) {
-                        Button("Nouveau dossier", systemImage: "folder.badge.plus") {
-                            folderName = ""
-                            creatingFolder = true
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("Nouveau dossier")
-                    }
-                }
+                ToolbarItem(placement: folder.isEmpty ? .navigation : .automatic) { folderButton }
                 ToolbarItemGroup {
-                    if !folder.isEmpty {
-                        Button("Retour au coffre", systemImage: "chevron.backward") { folder = "" }
-                    }
                     Menu {
-                        Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }.disabled(model.extracting)
-                        #if os(iOS)
-                        if ScanScreen.supported { Button("Numériser", systemImage: "document.viewfinder") { scanner = true } }
-                        #else
-                        Button("Photographier un document", systemImage: "camera") { scanner = true }
-                        #endif
+                        importButton
+                        if ScanScreen.supported {
+                            Button("Numériser", systemImage: "document.viewfinder") { scanner = true }
+                        }
                     } label: { Label("Ajouter", systemImage: "plus") }
                     Menu {
-                        Picker("Dossier", selection: $folder) {
-                            Text("Racine du coffre").tag("")
-                            ForEach(model.library.folders, id: \.self) { Text($0).tag($0) }
-                        }
-                        Picker("Catégorie", selection: $category) {
-                            Text("Toutes les catégories").tag("")
-                            ForEach(Array(Set(folderDocuments.map(\.labels.category))).filter { !$0.isEmpty }.sorted(), id: \.self) { Text($0).tag($0) }
-                        }
+                        folderPicker
+                        categoryPicker
                     } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
                     Menu {
-                        Button("Réglages du coffre", systemImage: "gearshape") { settings = true }
-                        Button("Verrouiller", systemImage: "lock") { model.lock() }
+                        settingsButton
+                        lockButton
                     } label: { Label("Coffre", systemImage: "lock.shield") }
                 }
             }
+            #endif
         } detail: {
             if let item = selectedDocument {
                 DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
@@ -119,6 +101,10 @@ struct LibraryScreen: View {
                 ContentUnavailableView("Sélectionnez un document", systemImage: "doc.text.magnifyingglass")
             }
         }
+    }
+
+    var body: some View {
+        browserWithCommands
         .fileImporter(isPresented: $importer, allowedContentTypes: [.item], allowsMultipleSelection: versionParent == nil) { result in
             switch result {
             case let .success(urls):
@@ -193,6 +179,85 @@ struct LibraryScreen: View {
             if model.documents.contains(where: { $0.lineage == item.lineage && $0.id != item.id }) {
                 Text("La suppression concerne uniquement la version sélectionnée.")
             }
+        }
+    }
+
+    @ViewBuilder private var browserWithCommands: some View {
+        #if os(macOS)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                folderButton
+                importButton
+                Button("Photographier un document", systemImage: "camera") { scanner = true }
+                    .help("Photographier un document")
+                Divider()
+                Menu {
+                    folderPicker.pickerStyle(.inline)
+                } label: { Label("Choisir un dossier", systemImage: "folder") }
+                .help("Choisir un dossier")
+                Menu {
+                    categoryPicker.pickerStyle(.inline)
+                } label: { Label("Filtrer par catégorie", systemImage: "line.3.horizontal.decrease") }
+                .help(category.isEmpty ? "Filtrer par catégorie" : "Catégorie : \(category)")
+                Spacer(minLength: 8)
+                settingsButton
+                lockButton
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.bar)
+            Divider()
+            browser
+        }
+        #else
+        browser
+        #endif
+    }
+
+    @ViewBuilder private var folderButton: some View {
+        if folder.isEmpty {
+            Button("Nouveau dossier", systemImage: "folder.badge.plus") {
+                folderName = ""
+                creatingFolder = true
+            }
+            .labelStyle(.iconOnly)
+            .help("Nouveau dossier")
+        } else {
+            Button("Retour au coffre", systemImage: "chevron.backward") { folder = "" }
+                .help("Retour au coffre")
+        }
+    }
+
+    private var importButton: some View {
+        Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }
+            .help("Importer un fichier")
+            .disabled(model.extracting)
+    }
+
+    private var settingsButton: some View {
+        Button("Réglages du coffre", systemImage: "gearshape") { settings = true }
+            .help("Réglages du coffre")
+    }
+
+    private var lockButton: some View {
+        Button("Verrouiller", systemImage: "lock") { model.lock() }
+            .help("Verrouiller le coffre")
+    }
+
+    private var folderPicker: some View {
+        Picker("Dossier", selection: $folder) {
+            Text("Racine du coffre").tag("")
+            ForEach(model.library.folders, id: \.self) { Text($0).tag($0) }
+        }
+    }
+
+    private var categoryPicker: some View {
+        Picker("Catégorie", selection: $category) {
+            Text("Toutes les catégories").tag("")
+            ForEach(Array(Set(folderDocuments.map(\.labels.category))).filter { !$0.isEmpty }.sorted(), id: \.self) { Text($0).tag($0) }
         }
     }
 
