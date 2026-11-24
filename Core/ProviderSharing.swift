@@ -2,12 +2,21 @@ import CloudKit
 import Foundation
 
 extension CloudBucket {
-    func revoke(email: String) async throws {
+    private func recordID(for contact: TransportContact) async throws -> CKRecord.ID {
+        if let name = contact.cloudRecordName { return CKRecord.ID(recordName: name) }
+        let target = try await container.shareParticipant(forEmailAddress: contact.email)
+        guard let id = target.userIdentity.userRecordID else { throw FamilyError.policy }
+        return id
+    }
+
+    func revoke(contact: TransportContact, keeping active: [TransportContact]) async throws {
         guard isOwner else { throw FamilyError.denied }
+        let recordID = try await recordID(for: contact)
+        for other in active where other.destination == contact.destination {
+            if try await self.recordID(for: other) == recordID { return }
+        }
         let id = CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: zone)
         guard let share = try await database.record(for: id) as? CKShare else { throw FamilyError.policy }
-        let target = try await container.shareParticipant(forEmailAddress: email)
-        guard let recordID = target.userIdentity.userRecordID else { throw FamilyError.policy }
         if let participant = share.participants.first(where: { $0.userIdentity.userRecordID == recordID }) {
             guard participant.role != .owner else { throw FamilyError.denied }
             share.removeParticipant(participant)
@@ -70,6 +79,35 @@ extension DropboxBucket {
 }
 
 extension VaultStore {
+    func issueNearbyTicket(to card: PublicIdentity, account: String) async throws -> String {
+        let config = try settings()
+        guard config.provider == .cloud, let initial = family else { throw FamilyError.policy }
+        let policy = try initial.tip.decoded()
+        guard policy.member(initial.principal)?.role == .admin, initial.principal != card.fingerprint else { throw FamilyError.denied }
+        if let member = policy.member(card.fingerprint) {
+            let previous = initial.contacts?[card.fingerprint]
+            guard member.role == .reader, member.documents == nil,
+                  previous == nil || previous?.cloudRecordName == account else {
+                throw TransportError(message: "Cet appareil a déjà des droits personnalisés. Utilisez la gestion des appareils.")
+            }
+        }
+        guard let cloud = try await objectBucket(config) as? CloudBucket, cloud.isOwner else { throw FamilyError.denied }
+        let recordID = CKRecord.ID(recordName: account)
+        var route = initial.cloudURL
+        var contact: TransportContact?
+        if try await cloud.container.userRecordID() != recordID {
+            let participant = try await cloud.container.shareParticipant(forUserRecordID: recordID)
+            guard participant.userIdentity.userRecordID == recordID else { throw FamilyError.policy }
+            try Task.checkCancellation()
+            route = try await cloud.authorize(participant: participant, write: false, preserveWrite: true)
+            contact = TransportContact(email: "", cloudRecordName: account, destination: config.destination)
+        }
+        try Task.checkCancellation()
+        guard family?.tip.digest == initial.tip.digest, try settings() == config else { throw VaultError.changed }
+        try changeMembership(card: card, role: .reader, scope: nil, using: identity(), contact: contact, cloudURL: route)
+        return try familyTicket(for: card)
+    }
+
     func issueTicket(to card: PublicIdentity, email: String) async throws -> String {
         guard let original = family, let member = try original.tip.decoded().member(card.fingerprint),
               try original.tip.decoded().member(original.principal)?.role == .admin else { throw FamilyError.denied }
@@ -100,7 +138,10 @@ extension VaultStore {
         for contact in family?.removals ?? [] where contact.destination == destination {
             let email = contact.email
             try gate.check()
-            if let cloud = bucket as? CloudBucket { try await cloud.revoke(email: email) }
+            if let cloud = bucket as? CloudBucket {
+                let active = family?.contacts?.values.map { $0 } ?? []
+                try await cloud.revoke(contact: contact, keeping: active)
+            }
             if let dropbox = bucket as? DropboxBucket { try await dropbox.revoke(email: email) }
             guard var state = family else { throw FamilyError.policy }
             state.removals?.removeAll { $0 == contact }

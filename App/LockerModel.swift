@@ -27,6 +27,7 @@ final class LockerModel {
     var vaultTitle: String { vaultNames[slot] ?? (familyMode ? "Coffre familial" : "Coffre personnel") }
     var extracting = false
     var pendingArchivePlacement: SelectedImport?
+    var pendingNearbyRole: NearbyRole?
     var opening = false
     private(set) var changingProtection = false
     private(set) var requiresAuthentication = true
@@ -105,6 +106,7 @@ final class LockerModel {
         opening = false
         extracting = false
         pendingArchivePlacement = nil
+        pendingNearbyRole = nil
         syncing = false
         configuration = ProviderSettings()
         recovery = nil

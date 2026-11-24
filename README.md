@@ -42,7 +42,11 @@ Pour CloudKit, le type de données **LockerObject** utilise un champ **bytes** d
 
 Pour le NAS, saisir son adresse accessible sur le réseau local avec un certificat TLS approuvé par l’appareil. Aucune ouverture de port, connexion VPN ou modification du routeur n’est nécessaire. Une erreur réseau laisse les modifications locales dans la file chiffrée. Locker réessaie pendant que le coffre est ouvert. Le partage entre deux réseaux fonctionne via iCloud ou Dropbox indépendamment du NAS.
 
-## Inviter un membre de la famille
+## Partager entre deux iPhones à proximité
+
+Dans le menu **Coffre → Partage familial**, choisissez **Inviter à proximité** sur le premier iPhone et **Recevoir un coffre** sur le second. Gardez Locker ouvert et confirmez le même code sur les deux écrans. Chaque personne utilise son compte iCloud. Locker configure le partage en lecture du coffre familial entier. Si le coffre personnel contient déjà des fichiers, un coffre familial séparé est créé et vous pouvez y importer les documents à partager. La découverte nécessite l’autorisation Réseau local, et la configuration iCloud nécessite Internet.
+
+## Inviter un membre de la famille manuellement
 
 1. Dans **Réglages du coffre → Partage familial**, le propriétaire choisit **Inviter un proche → Créer le coffre familial** dans un coffre local vide. Il enregistre ensuite iCloud ou Dropbox dans les réglages de ce coffre pour partager entre réseaux, et y importe les documents.
 2. Dans son propre coffre local vide, le proche choisit **Rejoindre le coffre d’un proche → Envoyer ma carte publique**. Le propriétaire colle la carte reçue et compare l’empreinte avec le proche par téléphone ou en personne.

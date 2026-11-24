@@ -39,13 +39,20 @@ extension VaultStore {
         return try family?.tip.decoded().members ?? []
     }
 
-    func changeMembership(card: PublicIdentity, role: FamilyRole?, scope: Set<UUID>?, using device: DeviceIdentity, reencrypt: Bool = false) throws {
+    func changeMembership(card: PublicIdentity, role: FamilyRole?, scope: Set<UUID>?, using device: DeviceIdentity, reencrypt: Bool = false,
+                          contact: TransportContact? = nil, cloudURL: URL? = nil) throws {
         try gate.check()
         guard var state = family else { throw FamilyError.policy }
         let old = try state.tip.decoded()
         guard device.card.fingerprint != card.fingerprint, old.member(device.card.fingerprint)?.role == .admin else {
             throw FamilyError.denied
         }
+        if let contact {
+            var contacts = state.contacts ?? [:]
+            contacts[card.fingerprint] = contact
+            state.contacts = contacts
+        }
+        if let cloudURL { state.cloudURL = cloudURL }
         var members = old.members.filter { $0.card.fingerprint != card.fingerprint }
         if let role { members.append(Member(card: card, role: role, documents: scope)) }
         let next = try Policy.issue(members, prior: state.tip, by: device)

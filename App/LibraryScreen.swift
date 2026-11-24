@@ -18,6 +18,10 @@ struct LibraryScreen: View {
     #if os(macOS)
     @State private var showSidebar = true
     #endif
+    #if os(iOS)
+    @State private var familySharing = false
+    #endif
+    @State private var resumedNearby: NearbyRole?
     @State private var settings = false
     @State private var importer = false
     @State private var versionImporter = false
@@ -158,6 +162,7 @@ struct LibraryScreen: View {
                     categoryPicker
                 } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
                 Menu {
+                    Button("Partage familial", systemImage: "person.2") { familySharing = true }
                     settingsButton
                     lockButton
                 } label: { Label("Coffre", systemImage: "lock.shield") }
@@ -421,7 +426,16 @@ struct LibraryScreen: View {
                 }
             } cancel: { scanner = false }
         }
-        .sheet(isPresented: Binding(get: { model.recovery != nil }, set: { if !$0 { model.recovery = nil } })) {
+        #if os(iOS)
+        .lockerPanel(isPresented: $familySharing) { FamilyScreen(model: model) }
+        .sheet(item: $resumedNearby) { role in
+            if let store = model.store { NearbyFamilyScreen(model: model, role: role, store: store) }
+        }
+        #endif
+        .sheet(isPresented: Binding(get: { model.recovery != nil }, set: { if !$0 { model.recovery = nil } }), onDismiss: {
+            resumedNearby = model.pendingNearbyRole
+            model.pendingNearbyRole = nil
+        }) {
             VStack(alignment: .leading, spacing: 18) {
                 Label("Code de récupération", systemImage: "key").font(.title2.bold())
                 Text("Recopiez ce code et conservez-le en lieu sûr. Il donne accès aux copies chiffrées de ce coffre.")

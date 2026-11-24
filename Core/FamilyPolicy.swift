@@ -75,6 +75,7 @@ struct PolicyCertificate: Codable {
 
 struct TransportContact: Codable, Equatable {
     let email: String
+    var cloudRecordName: String? = nil
     let destination: String
 }
 
