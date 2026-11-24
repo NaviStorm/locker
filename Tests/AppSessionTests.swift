@@ -200,7 +200,11 @@ final class AppSessionTests: VaultTestCase {
         _ = try VaultStore(root: otherRoot, keys: keys, create: true)
         var deny = true
         var newProtection: Bool?
-        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey, _ in
+        VaultAuthenticationMethod.biometrics.remember(for: otherID)
+        defer { UserDefaults.standard.removeObject(forKey: "authenticationMethod." + otherID) }
+        var requestedMethods: [VaultAuthenticationMethod] = []
+        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey, method in
+            requestedMethods.append(method)
             if deny { throw VaultError.locked }
             switch mode {
             case .unlock: return try VaultStore(root: root, keys: keys, gate: gate)
@@ -236,6 +240,8 @@ final class AppSessionTests: VaultTestCase {
         model.extract(files, to: .new, folder: "Source", protectNewKey: false)
         try await settle()
         XCTAssertEqual(newProtection, false)
+        XCTAssertEqual(requestedMethods, [.biometrics, .biometrics, .passcode])
+        XCTAssertEqual(VaultAuthenticationMethod.preferred(for: otherID), .biometrics)
         XCTAssertEqual(model.slots.count, 3)
         XCTAssertNotEqual(model.slot, otherID)
         XCTAssertNotNil(model.recovery)

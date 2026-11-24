@@ -8,7 +8,7 @@ enum VaultAuthenticationMethod: String {
     static func preferred(for slot: String, defaults: UserDefaults = .standard) -> Self {
         if let value = defaults.string(forKey: "authenticationMethod." + slot),
            let saved = Self(rawValue: value) { return saved }
-        return LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) ? .biometrics : .passcode
+        return .passcode
     }
 
     func remember(for slot: String, defaults: UserDefaults = .standard) {

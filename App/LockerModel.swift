@@ -12,7 +12,7 @@ final class LockerModel {
     var slot = "" {
         didSet { if slot != oldValue { authenticationMethod = .preferred(for: slot) } }
     }
-    var authenticationMethod = VaultAuthenticationMethod.preferred(for: "")
+    private(set) var authenticationMethod = VaultAuthenticationMethod.passcode
 
     func rememberAuthenticationMethod(_ method: VaultAuthenticationMethod) {
         guard store != nil else { return }
@@ -145,12 +145,12 @@ final class LockerModel {
     }
 
     func open(_ mode: AccessMode, newSlot: Bool = false, protectNewKey: Bool = true,
-              using selectedMethod: VaultAuthenticationMethod? = nil, afterOpen: (() -> Void)? = nil) {
+              afterOpen: (() -> Void)? = nil) {
         guard !opening, store == nil else { return }
         let selected = newSlot ? UUID().uuidString : slot
         guard UUID(uuidString: selected) != nil else { return }
         let root = base.appendingPathComponent(selected)
-        let method = selectedMethod ?? authenticationMethod
+        let method = VaultAuthenticationMethod.preferred(for: selected)
         let gate = SessionGate()
         let auth = LAContext()
         auth.localizedReason = "Ouvrir le coffre documentaire"
@@ -181,7 +181,6 @@ final class LockerModel {
                 problem = transportIssue
                 recovery = code
                 store = session
-                if requiresAuthentication { rememberAuthenticationMethod(method) }
                 familyMode = shared
                 afterOpen?()
                 activity()

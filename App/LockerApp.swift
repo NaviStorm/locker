@@ -34,11 +34,6 @@ struct RootScreen: View {
                             Picker("Coffre local", selection: $model.slot) {
                                 ForEach(model.slots, id: \.self) { Text(model.vaultNames[$0] ?? ("Coffre " + $0.prefix(8))).tag($0) }
                             }.frame(maxWidth: 330)
-                        }
-                        if !model.slots.isEmpty || protectNewKey {
-                            AuthenticationMethodPicker(selection: $model.authenticationMethod)
-                        }
-                        if !model.slots.isEmpty {
                             Button("Ouvrir le coffre") { model.open(.unlock) }.buttonStyle(.borderedProminent)
                         }
                         if !recovering || model.slots.isEmpty || !model.repairSelected {

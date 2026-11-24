@@ -25,14 +25,12 @@ struct ArchiveDestinationScreen: View {
     let folder: String
     @Environment(\.dismiss) private var dismiss
     @State private var destination: ArchiveDestination
-    @State private var method: VaultAuthenticationMethod
     @State private var protectNewKey = true
 
     init(model: LockerModel, files: SelectedImport, folder: String) {
         self.model = model
         self.files = files
         self.folder = folder
-        _method = State(initialValue: model.authenticationMethod)
         _destination = State(initialValue: .existing(model.slot))
     }
 
@@ -51,15 +49,8 @@ struct ArchiveDestinationScreen: View {
                         }
                         Text("Nouveau coffre").tag(ArchiveDestination.new)
                     }
-                    .onChange(of: destination) { _, target in
-                        if case .existing(let slot) = target { method = .preferred(for: slot) }
-                        else { method = model.authenticationMethod }
-                    }
                     if destination == .new {
                         Toggle("Exiger une authentification pour le nouveau coffre", isOn: $protectNewKey)
-                    }
-                    if destination != .existing(model.slot) && (destination != .new || protectNewKey) {
-                        AuthenticationMethodPicker(selection: $method)
                     }
                 } footer: {
                     if destination == .existing(model.slot) && !folder.isEmpty {
@@ -68,7 +59,7 @@ struct ArchiveDestinationScreen: View {
                 }
                 Button("Décompresser dans ce coffre") {
                     dismiss()
-                    model.extract(files, to: destination, folder: folder, protectNewKey: protectNewKey, method: method)
+                    model.extract(files, to: destination, folder: folder, protectNewKey: protectNewKey)
                 }
                 Button("Importer sans décompresser dans le coffre ouvert") {
                     dismiss()
@@ -90,8 +81,7 @@ extension LockerModel {
         }
     }
 
-    func extract(_ files: SelectedImport, to destination: ArchiveDestination, folder: String, protectNewKey: Bool = true,
-                 method: VaultAuthenticationMethod? = nil) {
+    func extract(_ files: SelectedImport, to destination: ArchiveDestination, folder: String, protectNewKey: Bool = true) {
         guard store != nil, !extracting else { return }
         if destination == .existing(slot) {
             extractHere(files, folder: folder)
@@ -106,9 +96,9 @@ extension LockerModel {
         switch destination {
         case let .existing(id):
             slot = id
-            open(.unlock, using: method, afterOpen: afterOpen)
+            open(.unlock, afterOpen: afterOpen)
         case .new:
-            open(.create, newSlot: true, protectNewKey: protectNewKey, using: method, afterOpen: afterOpen)
+            open(.create, newSlot: true, protectNewKey: protectNewKey, afterOpen: afterOpen)
         }
     }
 
