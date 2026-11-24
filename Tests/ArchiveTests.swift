@@ -44,6 +44,7 @@ final class ArchiveTests: VaultTestCase {
     func testFailedOrLockedExtractionPublishesNothing() async throws {
         let root = location("coffre")
         let store = try VaultStore(root: root, keys: VaultKeys(), create: true)
+        let originalFiles = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
         let zip = try fixture("correct.zip", Self.zip)
         let broken = location("incorrect.zip")
         try Data("Fichier fictif".utf8).write(to: broken)
@@ -51,7 +52,7 @@ final class ArchiveTests: VaultTestCase {
         let library = try await store.library()
         let pending = await store.pending
         XCTAssertTrue(library.documents.isEmpty && library.folders.isEmpty && pending.isEmpty)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["catalog.v1"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), originalFiles)
         store.gate.revoke()
         do { try await store.extractSelection([zip], folder: ""); XCTFail("Coffre verrouillé") } catch VaultError.locked {}
     }

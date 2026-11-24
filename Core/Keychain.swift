@@ -98,7 +98,7 @@ enum VaultAccess {
         let catalog = root.appendingPathComponent("catalog.v1")
         let existing = FileManager.default.fileExists(atPath: catalog.path)
         switch mode {
-        case .unlock: break
+        case .unlock: guard existing else { throw VaultError.unavailable }
         case .create, .recover:
             let keys: VaultKeys
             if case let .recover(code) = mode { keys = try VaultKeys(code: code) }

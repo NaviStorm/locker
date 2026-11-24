@@ -45,7 +45,7 @@ struct ArchiveDestinationScreen: View {
                 Section {
                     Picker("Coffre de destination", selection: $destination) {
                         ForEach(model.slots, id: \.self) { slot in
-                            Text(model.vaultNames[slot] ?? ("Coffre " + slot.prefix(8))).tag(ArchiveDestination.existing(slot))
+                            Text(model.pickerTitle(for: slot)).tag(ArchiveDestination.existing(slot))
                         }
                         Text("Nouveau coffre").tag(ArchiveDestination.new)
                     }

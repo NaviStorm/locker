@@ -70,6 +70,7 @@ struct RootScreen: View {
                 model.tick()
             }
         }
+        .modifier(LocalVaultRemovalDialog(model: model, request: $model.removalRequest))
         .alert("Locker", isPresented: Binding(get: { model.problem != nil }, set: { if !$0 { model.problem = nil } })) {
             Button("Fermer") { model.problem = nil }
         } message: { Text(model.problem ?? "") }
@@ -80,7 +81,7 @@ struct RootScreen: View {
             if !model.slots.isEmpty && !recovering {
                 Picker("Coffre local", selection: $model.slot) {
                     ForEach(model.slots, id: \.self) {
-                        Text(model.vaultNames[$0] ?? ("Coffre " + $0.prefix(8))).tag($0)
+                        Text(model.pickerTitle(for: $0)).tag($0)
                     }
                 }
                 Button {
@@ -89,6 +90,11 @@ struct RootScreen: View {
                     Label("Ouvrir le coffre", systemImage: "lock.open")
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent).controlSize(.large)
+                if model.vaultKinds[model.slot] != .family {
+                    Button("Supprimer de cet appareil…", role: .destructive) {
+                        model.open(.unlock) { model.requestLocalRemoval() }
+                    }
+                }
                 Divider()
             }
 
@@ -100,7 +106,7 @@ struct RootScreen: View {
                     if model.repairSelected {
                         Picker("Coffre à réparer", selection: $model.slot) {
                             ForEach(model.slots, id: \.self) {
-                                Text(model.vaultNames[$0] ?? ("Coffre " + $0.prefix(8))).tag($0)
+                                Text(model.pickerTitle(for: $0)).tag($0)
                             }
                         }
                     }
@@ -134,6 +140,23 @@ struct RootScreen: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .disabled(model.opening)
+        .disabled(model.opening || model.removingVault)
+    }
+}
+
+struct LocalVaultRemovalDialog: ViewModifier {
+    let model: LockerModel
+    @Binding var request: String?
+
+    func body(content: Content) -> some View {
+        content
+        .confirmationDialog("Supprimer « \(model.pickerTitle(for: request ?? model.slot)) » de cet appareil ?",
+            isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } }),
+            titleVisibility: .visible, presenting: request) { id in
+            Button("Supprimer le coffre local", role: .destructive) { Task { await model.removeUnsharedVault(id) } }
+            Button("Annuler", role: .cancel) {}
+        } message: { _ in
+            Text("Les documents, leurs versions et les modifications en attente seront effacés de cet appareil. Les copies déjà synchronisées resteront chez le fournisseur.")
+        }
     }
 }

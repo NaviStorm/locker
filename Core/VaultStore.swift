@@ -168,6 +168,7 @@ actor VaultStore {
         entries = state.entries
         pending = state.pending
         family = state.family
+        VaultKind(state.family, keys: keys).cache(in: root)
         joinDraft = state.joinDraft
         importedShares = state.importedShares
         // A crash can leave encrypted content without a committed catalogue reference.
@@ -232,6 +233,11 @@ actor VaultStore {
         let data = try Self.pack(catalog, keys: keys, purpose: "catalog")
         try gate.authorized {
             try VaultFiles.save(data, to: root.appendingPathComponent("catalog.v1"))
+            if family?.tip.signed.bytes != catalog.family?.tip.signed.bytes
+                || family?.waiting.count != catalog.family?.waiting.count
+                || family?.removals?.count != catalog.family?.removals?.count {
+                VaultKind(catalog.family, keys: keys).cache(in: root)
+            }
             family = catalog.family
             entries = catalog.entries
             pending = catalog.pending

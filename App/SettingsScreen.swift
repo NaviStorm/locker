@@ -18,6 +18,7 @@ struct SettingsScreen: View {
     @State private var sharing = false
     @State private var family = false
     @State private var rotate = false
+    @State private var removal: String?
     private static var dropboxKey: String {
         Bundle.main.object(forInfoDictionaryKey: "LockerDropboxKey") as? String ?? ""
     }
@@ -118,7 +119,16 @@ struct SettingsScreen: View {
                     }
                     if !errorText.isEmpty { Text(errorText).foregroundStyle(.red) }
                 }
+                Section {
+                    if model.vaultKinds[model.slot] == .family {
+                        Label("Ce coffre familial est protégé contre la suppression.", systemImage: "person.2")
+                    } else {
+                        Button("Supprimer ce coffre de cet appareil…", role: .destructive) { removal = model.slot }
+                            .disabled(model.removingVault)
+                    }
+                }
             }.vaultFormStyle().navigationTitle("Réglages du coffre")
+            .modifier(LocalVaultRemovalDialog(model: model, request: $removal))
             .modifier(VaultDismissToolbar())
             .confirmationDialog("Créer un nouveau coffre avec de nouvelles clés et conserver l’ancien hors ligne ?", isPresented: $rotate) {
                 Button("Rechiffrer les documents") {

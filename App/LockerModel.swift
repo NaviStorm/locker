@@ -8,6 +8,9 @@ final class LockerModel {
     @ObservationIgnored private let openSession: OpenSession
     let base: URL
     var vaultNames: [String: String] = [:]
+    private(set) var vaultKinds: [String: VaultKind] = [:]
+    private(set) var removingVault = false
+    var removalRequest: String?
     var slots: [String] = []
     var slot = "" {
         didSet { if slot != oldValue { authenticationMethod = .preferred(for: slot) } }
@@ -21,10 +24,27 @@ final class LockerModel {
     }
 
     var store: VaultStore?
-    var familyMode = false
+    var familyMode = false {
+        didSet {
+            if let store {
+                vaultKinds[slot] = VaultKind.cached(in: store.root) ?? (familyMode ? .family : .personal)
+            }
+        }
+    }
     var library = VaultLibrary()
     var documents: [ListedDocument] { library.documents }
-    var vaultTitle: String { vaultNames[slot] ?? (familyMode ? "Coffre familial" : "Coffre personnel") }
+    var vaultTitle: String { name(of: slot) }
+
+    private func name(of id: String) -> String {
+        if let name = vaultNames[id] { return name }
+        if store != nil && id == slot { return (familyMode ? VaultKind.family : .personal).title }
+        return vaultKinds[id]?.title ?? "Coffre"
+    }
+
+    func pickerTitle(for id: String) -> String {
+        let title = name(of: id)
+        return slots.contains { $0 != id && name(of: $0) == title } ? title + " · " + id.prefix(8) : title
+    }
     var extracting = false
     var pendingArchivePlacement: SelectedImport?
     var pendingNearbyRole: NearbyRole?
@@ -51,9 +71,14 @@ final class LockerModel {
         self.openSession = openSession
         self.base = base
         if timeout <= 0 { timeout = 120 }
-        slots = ((try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? [])
-            .filter { UUID(uuidString: $0) != nil }.sorted()
+        let directories = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
+        for path in directories where path.hasPrefix(".removing.") {
+            do { try LocalVaultRemoval(directory: base.appendingPathComponent(path))?.finish() }
+            catch { problem = "Le nettoyage d’un coffre supprimé reprendra à la prochaine ouverture." }
+        }
+        slots = directories.filter { UUID(uuidString: $0) != nil }.sorted()
         for id in slots {
+            vaultKinds[id] = VaultKind.cached(in: base.appendingPathComponent(id))
             if let bytes = try? Self.nameItem(id).read() { vaultNames[id] = String(data: bytes, encoding: .utf8) }
         }
         slot = slots.first ?? ""
@@ -67,6 +92,7 @@ final class LockerModel {
         requiresAuthentication = DeviceKeychain(account: slotID).requiresAuthentication()
         slot = slotID
         store = session
+        familyMode = await session.family != nil
         library = list
         recovery = code
         activity()
@@ -85,6 +111,35 @@ final class LockerModel {
         activity()
     }
 
+    func requestLocalRemoval() {
+        guard let store, store.root.lastPathComponent == slot, !removingVault else { return }
+        if vaultKinds[slot] == .family {
+            problem = "Ce coffre familial est protégé contre la suppression."
+        } else {
+            removalRequest = slot
+        }
+    }
+
+    func removeUnsharedVault(_ id: String) async {
+        guard !removingVault, slot == id, let session = store else { return }
+        removingVault = true
+        defer { removingVault = false }
+        do {
+            syncTask?.cancel()
+            await syncTask?.value
+            guard store === session, slot == id else { return }
+            syncing = false
+            let removal = try await session.retireUnsharedVault(in: base, slot: id)
+            if store === session { lock() }
+            slots.removeAll { $0 == id }
+            vaultKinds[id] = nil
+            vaultNames[id] = nil
+            if slot == id { slot = slots.first ?? "" }
+            do { try removal.finish() }
+            catch { problem = "Coffre retiré. Le nettoyage local reprendra à la prochaine ouverture." }
+        } catch { if store === session { problem = error.localizedDescription } }
+    }
+
     func activity() { lastActivity = .now }
     func tick(at now: ContinuousClock.Instant = .now) {
         guard store != nil else { return }
@@ -93,6 +148,8 @@ final class LockerModel {
     }
 
     func lock() {
+        removalRequest = nil
+        if let store, let kind = VaultKind.cached(in: store.root) { vaultKinds[slot] = kind }
         accessGate?.revoke()
         context?.invalidate()
         context = nil
@@ -208,7 +265,7 @@ final class LockerModel {
     }
 
     func sync() {
-        guard !syncing, configuration.provider != .local, let session = store else { return }
+        guard removalRequest == nil, !removingVault, !syncing, configuration.provider != .local, let session = store else { return }
         syncing = true
         let provider = configuration.provider
         syncTask = Task {
