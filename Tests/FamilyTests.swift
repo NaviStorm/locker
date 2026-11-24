@@ -64,6 +64,48 @@ final class FamilyTests: VaultTestCase {
         catch FamilyError.stale {}
     }
 
+    func testSecondChannelVerificationSurvivesReopeningAndBelongsToOneCard() throws {
+        let root = location("famille")
+        let keys = VaultKeys()
+        let first = try DeviceIdentity(hardware: false).card
+        let second = try DeviceIdentity(hardware: false).card
+        let store = try VaultStore(root: root, keys: keys, create: true)
+        var verification = try store.familyPeerVerification()
+        XCTAssertEqual(verification.card, "")
+        verification.card = first.card
+        try store.saveFamilyPeerVerification(verification)
+        XCTAssertFalse(try store.familyPeerVerification().isConfirmed)
+        verification.isConfirmed = true
+        try store.saveFamilyPeerVerification(verification)
+        store.gate.revoke()
+        XCTAssertThrowsError(try store.familyPeerVerification())
+        XCTAssertThrowsError(try store.saveFamilyPeerVerification(FamilyPeerVerification()))
+
+        let reopened = try VaultStore(root: root, keys: keys)
+        verification = try reopened.familyPeerVerification()
+        XCTAssertEqual(verification.peer, first)
+        XCTAssertTrue(verification.isConfirmed)
+        let bytes = try Data(contentsOf: root.appendingPathComponent("family-peer.v1"))
+        XCTAssertNil(bytes.range(of: Data(verification.card.utf8)))
+        XCTAssertNil(bytes.range(of: Data(first.fingerprint.utf8)))
+        let other = try VaultStore(root: location("autre"), keys: keys, create: true)
+        XCTAssertEqual(try other.familyPeerVerification(), FamilyPeerVerification())
+
+        verification.card = second.card
+        try reopened.saveFamilyPeerVerification(verification)
+        XCTAssertFalse(try reopened.familyPeerVerification().isConfirmed)
+        verification.isConfirmed = true
+        try reopened.saveFamilyPeerVerification(verification)
+        verification.isConfirmed = false
+        try reopened.saveFamilyPeerVerification(verification)
+        XCTAssertFalse(try reopened.familyPeerVerification().isConfirmed)
+        verification.card = ""
+        verification.isConfirmed = true
+        try reopened.saveFamilyPeerVerification(verification)
+        let cleared = try VaultStore(root: root, keys: keys).familyPeerVerification()
+        XCTAssertEqual(cleared, FamilyPeerVerification())
+    }
+
     func testJoinDraftGuidancePersistenceAndAcceptance() async throws {
         let owner = try DeviceIdentity(hardware: false)
         let reader = try DeviceIdentity(hardware: false)

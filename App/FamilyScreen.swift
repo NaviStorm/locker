@@ -5,8 +5,8 @@ struct FamilyScreen: View {
     @State private var members: [Member] = []
     @State private var principal = ""
     @State private var mine: PublicIdentity?
-    @State private var remoteCard = ""
-    @State private var verified = false
+    @State private var verification = FamilyPeerVerification()
+    @State private var verificationProblem: String?
     @State private var role = FamilyRole.reader
     @State private var restricted = false
     @State private var chosen = Set<UUID>()
@@ -22,7 +22,6 @@ struct FamilyScreen: View {
     @State private var reencrypt = true
     @State private var rescue = ""
     @State private var kit = ""
-    private var peer: PublicIdentity? { try? PublicIdentity(card: remoteCard) }
     private var lineages: [ListedDocument] {
         var seen = Set<UUID>()
         return model.documents.filter { seen.insert($0.lineage).inserted }
@@ -64,11 +63,15 @@ struct FamilyScreen: View {
                 }
                 if isAdmin {
                     Section("Vérification sur un second canal") {
-                        TextField("Carte publique du correspondant", text: $remoteCard, axis: .vertical)
-                            .onChange(of: remoteCard) { verified = false; issued = "" }
-                        if let peer {
+                        TextField("Carte publique du correspondant", text: verificationBinding(\.card), axis: .vertical)
+                            .autocorrectionDisabled()
+                        if let peer = verification.peer {
                             Text(peer.fingerprint).font(.system(.caption, design: .monospaced))
-                            Toggle("J’ai comparé cette empreinte avec le correspondant", isOn: $verified)
+                            Toggle("J’ai comparé cette empreinte avec le correspondant", isOn: verificationBinding(\.isConfirmed))
+                        }
+                        if let verificationProblem { Text(verificationProblem).foregroundStyle(.red) }
+                        else if verification.isConfirmed {
+                            Text("Vérification mémorisée dans ce coffre sur cet appareil.").font(.footnote)
                         }
                     }
                     Section("Inviter ou modifier les droits") {
@@ -90,14 +93,14 @@ struct FamilyScreen: View {
                             if !existingAccess { TextField("Adresse du compte du destinataire", text: $email) }
                         }
                         Button("Autoriser et préparer l’invitation") {
-                            guard let peer else { return }
+                            guard verificationProblem == nil, verification.isConfirmed, let peer = verification.peer else { return }
                             run { store in
                                 let scope = restricted && role != .admin ? chosen : nil
                                 try await store.changeMembership(card: peer, role: role, scope: scope)
                                 if existingAccess { issued = try await store.familyTicket(for: peer) }
                                 else { issued = try await store.issueTicket(to: peer, email: email) }
                             }
-                        }.disabled(!verified || peer == nil || (restricted && role != .admin && chosen.isEmpty))
+                        }.disabled(verificationProblem != nil || !verification.isConfirmed || (restricted && role != .admin && chosen.isEmpty))
                         if !issued.isEmpty { ShareLink("Transmettre l’invitation chiffrée", item: issued) }
                     }
                 } else if members.isEmpty {
@@ -163,6 +166,20 @@ struct FamilyScreen: View {
         }
     }
 
+    private func verificationBinding<Value>(_ key: WritableKeyPath<FamilyPeerVerification, Value>) -> Binding<Value> {
+        Binding(get: { verification[keyPath: key] }, set: { value in
+            guard let store = model.store else { return }
+            var updated = verification
+            updated[keyPath: key] = value
+            issued = ""
+            do {
+                try store.saveFamilyPeerVerification(updated)
+                verification = updated
+                verificationProblem = nil
+            } catch { verificationProblem = error.localizedDescription }
+        })
+    }
+
     private func saveDraft() {
         guard !working, let store = model.store else { return }
         let draft = joinDraft
@@ -182,6 +199,15 @@ struct FamilyScreen: View {
         principal = await store.family?.principal ?? ""
         members = try await store.members()
         model.familyMode = !members.isEmpty
+        if isAdmin {
+            do {
+                verification = try store.familyPeerVerification()
+                verificationProblem = nil
+            } catch {
+                verification = FamilyPeerVerification()
+                verificationProblem = error.localizedDescription
+            }
+        }
     }
 
     private func run(_ operation: @escaping (VaultStore) async throws -> Void) {
