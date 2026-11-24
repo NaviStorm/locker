@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+locker_bundle_id=com.tandreuperouges.locker.documents
+
 usage() {
     cat <<'HELP'
 Usage : scripts/install.sh --list
@@ -61,16 +63,16 @@ else:
 verify_signature() {
     local app=$1 extension=$2
     local signer='anchor apple generic and certificate leaf[subject.OU] = "RTMWCLXVLL"'
-    codesign --verify --deep --strict "$app"
-    codesign --verify --strict -R="identifier \"fr.locker.documents\" and $signer" "$app"
-    codesign --verify --strict -R="identifier \"fr.locker.documents.share\" and $signer" "$app/$extension"
+    codesign --verify --deep --strict --verbose=2 "$app" || return 1
+    codesign --verify --strict -R="identifier \"$locker_bundle_id\" and $signer" "$app" || return 1
+    codesign --verify --strict -R="identifier \"$locker_bundle_id.share\" and $signer" "$app/$extension"
 }
 
 install_mac() (
     local source=$1 directory=$2 target stage
     target="$directory/Locker.app"
     if [[ -e "$target" || -L "$target" ]]; then
-        [[ ! -L "$target" && "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist")" == fr.locker.documents ]] ||
+        [[ ! -L "$target" && "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist")" == "$locker_bundle_id" ]] ||
             fail "La destination existe déjà et ne correspond pas à Locker : $target"
     fi
     stage=$(mktemp -d "$directory/.locker-install.XXXXXXXX")
@@ -126,7 +128,9 @@ main() {
     export TMPDIR="$build/tmp"
     if [[ "$mode" == --ios ]]; then
         udid=$(iphone select "$selector")
-        destination="platform=iOS,id=$udid"
+        # Compile the same asset catalogue for every iPhone sharing this build cache.
+        # Only devicectl needs the selected device when installing the verified bundle.
+        destination="generic/platform=iOS"
         app="$build/Build/Products/Release-iphoneos/Locker.app"
         extension="PlugIns/LockerShare.appex"
     else
@@ -139,7 +143,7 @@ main() {
     verify_signature "$app" "$extension"
     if [[ "$mode" == --ios ]]; then
         xcrun devicectl device install app --device "$udid" "$app"
-        xcrun devicectl device info apps --device "$udid" --bundle-id fr.locker.documents
+        xcrun devicectl device info apps --device "$udid" --bundle-id "$locker_bundle_id"
     else
         install_mac "$app" /Applications
     fi
