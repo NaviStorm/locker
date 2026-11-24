@@ -202,6 +202,46 @@ final class AppSessionTests: VaultTestCase {
         XCTFail("Les deux commandes doivent être accessibles sans ouvrir de menu.")
     }
 
+    @MainActor func testImportScreenOffersDecompressionBeforeChoosingAFile() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("import"))
+        let host = UIHostingController(rootView: DocumentImportScreen(model: model, folder: ""))
+        await withCheckedContinuation { done in
+            presenter.present(host, animated: false) { done.resume() }
+        }
+        var buttons = Set<String>()
+        var labels = Set<String>()
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(50))
+            var visited = Set<ObjectIdentifier>()
+            func inspect(_ node: NSObject) {
+                guard visited.insert(ObjectIdentifier(node)).inserted else { return }
+                if let label = node.accessibilityLabel {
+                    labels.insert(label)
+                    if node.accessibilityTraits.contains(.button) { buttons.insert(label) }
+                }
+                if let view = node as? UIView { view.subviews.forEach(inspect) }
+                for child in node.accessibilityElements ?? [] {
+                    if let object = child as? NSObject { inspect(object) }
+                }
+                let count = node.accessibilityElementCount()
+                if count > 0 && count != NSNotFound {
+                    for index in 0..<count {
+                        if let child = node.accessibilityElement(at: index) as? NSObject { inspect(child) }
+                    }
+                }
+            }
+            inspect(host.view)
+            if buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]) { break }
+        }
+        XCTAssertTrue(buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]),
+                      "Éléments affichés : \(labels.sorted())")
+        await withCheckedContinuation { done in
+            host.dismiss(animated: false) { done.resume() }
+        }
+    }
+
     @MainActor func testArchiveDestinationSwitchUnlocksOrCreatesBeforeExtraction() async throws {
         let base = location("destinations")
         let keys = VaultKeys()

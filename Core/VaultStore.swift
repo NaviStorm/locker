@@ -212,6 +212,60 @@ actor VaultStore {
         return name
     }
 
+    func renameFolder(_ folder: String, to proposed: String) throws -> String {
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            throw TransportError(message: "Saisissez un nom de dossier valide.")
+        }
+        let parent = folder.lastIndex(of: "/").map { String(folder[...$0]) } ?? ""
+        let destination = parent + name
+        try updateFolder(folder, destination: destination)
+        return destination
+    }
+
+    func deleteFolder(_ folder: String) throws {
+        try updateFolder(folder, destination: nil)
+    }
+
+    private func updateFolder(_ folder: String, destination: String?) throws {
+        let folders = try library().folders
+        guard !folder.isEmpty, folders.contains(folder) else {
+            throw TransportError(message: "Ce dossier n’existe plus dans le coffre.")
+        }
+        func isAffected(_ path: String) -> Bool { path == folder || path.hasPrefix(folder + "/") }
+        if let destination {
+            if destination == folder { return }
+            if folders.contains(where: { path in
+                !isAffected(path) && (path.caseInsensitiveCompare(destination) == .orderedSame
+                    || path.range(of: destination + "/", options: [.anchored, .caseInsensitive]) != nil)
+            }) {
+                throw TransportError(message: "Un dossier porte déjà ce nom.")
+            }
+        }
+        var updated = entries
+        var queue = pending
+        var removed = [UUID]()
+        for entry in entries.values {
+            guard let document = entry.document else { continue }
+            let marker = document.isFolder == true
+            let path = marker ? document.labels.name : document.labels.folder
+            guard isAffected(path) else { continue }
+            let labels = destination.map { target in
+                var labels = document.labels
+                let newPath = target + path.dropFirst(folder.count)
+                if marker { labels.name = newPath } else { labels.folder = newPath }
+                return labels
+            }
+            let next = try changedEntry(entry, labels: labels)
+            updated[next.id] = next
+            queue[next.id] = next.revision
+            if labels == nil { removed.append(next.id) }
+        }
+        try commit(updated, queue)
+        // A locked or interrupted cleanup can also finish when the catalogue is reopened.
+        for id in removed { try? FileManager.default.removeItem(at: blob(id)) }
+    }
+
     @discardableResult
     func importFile(_ url: URL, versionOf parent: UUID? = nil, folder: String = "") throws -> UUID {
         try gate.check()
@@ -285,7 +339,12 @@ actor VaultStore {
 
     func change(_ id: UUID, labels: Labels?) throws {
         try gate.check()
-        guard var entry = entries[id], entry.document != nil else { throw VaultError.unavailable }
+        guard let entry = entries[id], entry.document != nil else { throw VaultError.unavailable }
+        try replace(changedEntry(entry, labels: labels))
+    }
+
+    private func changedEntry(_ original: Entry, labels: Labels?) throws -> Entry {
+        var entry = original
         try authorizeLocal(labels == nil ? .delete : .edit, scope: entry.scope)
         if let labels, var document = entry.document {
             var previous = document.previousLabels ?? [:]
@@ -302,7 +361,7 @@ actor VaultStore {
         guard entry.generation < UInt64.max else { throw VaultError.damaged }
         entry.generation += 1
         entry.revision = UUID()
-        try replace(entry)
+        return entry
     }
 
     func preview(_ id: UUID, limit: Int = 32 * 1024 * 1024) throws -> Data {

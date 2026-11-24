@@ -14,6 +14,9 @@ struct LibraryScreen: View {
     #endif
     @State private var settings = false
     @State private var importer = false
+    @State private var versionImporter = false
+    @State private var renamingFolder: String?
+    @State private var deletingFolder: String?
     @State private var archiveSelection: SelectedImport?
     @State private var scanner = false
     @State private var versionParent: UUID?
@@ -41,16 +44,20 @@ struct LibraryScreen: View {
             if showsFolders {
                 Section("Dossiers") {
                     ForEach(model.library.folders, id: \.self) { name in
-                        Button { folder = name } label: {
-                            HStack(spacing: 12) {
-                                VaultGlyph(symbol: "folder.fill")
-                                Text(name).font(.body.weight(.medium))
-                                Spacer(minLength: 4)
-                                Image(systemName: "chevron.forward").font(.caption2.weight(.bold))
-                                    .foregroundStyle(.tertiary).accessibilityHidden(true)
-                            }
-                            .contentShape(Rectangle())
-                        }.buttonStyle(.plain).padding(.vertical, 2)
+                        HStack(spacing: 8) {
+                            Button { folder = name } label: {
+                                HStack(spacing: 12) {
+                                    VaultGlyph(symbol: "folder.fill")
+                                    Text(name).font(.body.weight(.medium))
+                                    Spacer(minLength: 4)
+                                }.contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            Menu { folderActions(name) } label: {
+                                Label("Actions du dossier « \(name) »", systemImage: "ellipsis.circle")
+                                    .labelStyle(.iconOnly)
+                            }.menuIndicator(.hidden).fixedSize()
+                        }.padding(.vertical, 2)
+                        .contextMenu { folderActions(name) }
                     }
                 }
             }
@@ -142,7 +149,7 @@ struct LibraryScreen: View {
     private func documentView(_ item: ListedDocument) -> some View {
         DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
             versionParent = item.id
-            importer = true
+            versionImporter = true
         }, actions: documentActions(for: item)).id(item.id)
     }
 
@@ -180,15 +187,15 @@ struct LibraryScreen: View {
 
     var body: some View {
         browserWithCommands
-        .fileImporter(isPresented: $importer, allowedContentTypes: [.item], allowsMultipleSelection: versionParent == nil) { result in
+        .sheet(isPresented: $importer) {
+            DocumentImportScreen(model: model, folder: folder)
+        }
+        .fileImporter(isPresented: $versionImporter, allowedContentTypes: [.item]) { result in
+            defer { versionParent = nil }
             switch result {
-            case let .success(urls):
-                let files = SelectedImport(urls)
-                if versionParent == nil && files.containsArchive {
-                    archiveSelection = files
-                } else {
-                    model.importOriginals(files, parent: versionParent, folder: folder)
-                }
+            case let .success(url):
+                guard let versionParent else { return }
+                model.importOriginals(SelectedImport([url]), parent: versionParent, folder: folder)
             case let .failure(error):
                 if (error as NSError).code != NSUserCancelledError { model.problem = error.localizedDescription }
             }
@@ -220,6 +227,29 @@ struct LibraryScreen: View {
             }.disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Annuler", role: .cancel) {}
         }
+        .alert("Renommer le dossier", isPresented: Binding(get: { renamingFolder != nil },
+            set: { if !$0 { renamingFolder = nil } }), presenting: renamingFolder) { source in
+            TextField("Nom du dossier", text: $folderName)
+            Button("Renommer") {
+                let name = folderName
+                model.perform { store in
+                    let target = try await store.renameFolder(source, to: name)
+                    if folder == source { folder = target }
+                }
+            }.disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Annuler", role: .cancel) {}
+        }
+        .confirmationDialog("Supprimer le dossier « \(deletingFolder ?? "") » ?", isPresented: Binding(
+            get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }),
+            titleVisibility: .visible, presenting: deletingFolder) { name in
+            Button("Supprimer le dossier et son contenu", role: .destructive) {
+                model.perform { store in
+                    try await store.deleteFolder(name)
+                    if folder == name || folder.hasPrefix(name + "/") { folder = ""; selection = nil }
+                }
+            }
+            Button("Annuler", role: .cancel) {}
+        } message: { _ in Text("Les documents, leurs versions et les sous-dossiers de cet emplacement seront supprimés.") }
         .lockerPanel(isPresented: $settings) { SettingsScreen(model: model) }
         .sheet(isPresented: $scanner) {
             ScanScreen { result in
@@ -325,8 +355,16 @@ struct LibraryScreen: View {
         }
     }
 
+    @ViewBuilder private func folderActions(_ name: String) -> some View {
+        Button("Renommer le dossier…", systemImage: "pencil") {
+            folderName = name.components(separatedBy: "/").last ?? name
+            renamingFolder = name
+        }
+        Button("Supprimer le dossier…", systemImage: "trash", role: .destructive) { deletingFolder = name }
+    }
+
     private var importButton: some View {
-        Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }
+        Button("Importer un fichier", systemImage: "doc.badge.plus") { importer = true }
             .help("Importer un fichier")
             .disabled(model.extracting)
     }

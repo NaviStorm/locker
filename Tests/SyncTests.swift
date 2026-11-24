@@ -170,6 +170,43 @@ final class SyncTests: VaultTestCase {
         XCTAssertTrue(library.documents(in: factures).isEmpty)
     }
 
+    func testFolderTreeRenameDeleteAndSync() async throws {
+        let keys = VaultKeys()
+        let root = location("local")
+        let store = try VaultStore(root: root, keys: keys, create: true)
+        let other = try VaultStore(root: location("autre"), keys: keys, create: true)
+        let replica = MemoryReplica(root: location("."))
+        _ = try await store.createFolder("Contrats")
+        _ = try await store.createFolder("Contrats/Vides")
+        let doc = try await store.importData(Data([3]), name: "note.txt", folder: "Contrats/Archives")
+        let sibling = try await store.importData(Data([4]), name: "ancienne.txt", folder: "Contrats 2020")
+        try await store.synchronize(with: replica)
+        try await other.synchronize(with: replica)
+        for name in [" ", "..", "a/b", "contrats 2020"] {
+            do { _ = try await store.renameFolder("Contrats", to: name); XCTFail("Nom accepté") } catch {}
+        }
+        _ = try await store.renameFolder("Contrats", to: " Documents ")
+        _ = try await store.renameFolder("Documents/Archives", to: "Reçus")
+        let reopened = try VaultStore(root: root, keys: keys)
+        let library = try await reopened.library()
+        XCTAssertEqual(Set(library.folders), ["Documents", "Documents/Vides", "Documents/Reçus", "Contrats 2020"])
+        XCTAssertEqual(library.documents(in: "Documents/Reçus").map(\.id), [doc])
+        let bytes = try await reopened.preview(doc)
+        XCTAssertEqual(bytes, Data([3]))
+        try await reopened.synchronize(with: replica)
+        try await other.synchronize(with: replica)
+        let renamed = try await other.library()
+        XCTAssertEqual(renamed.folders, library.folders)
+        XCTAssertEqual(renamed.documents, library.documents)
+        try await reopened.deleteFolder("Documents")
+        do { try await reopened.deleteFolder(""); XCTFail("Suppression de la racine") } catch {}
+        try await reopened.synchronize(with: replica)
+        try await other.synchronize(with: replica)
+        let after = try await other.library()
+        XCTAssertEqual(after.folders, ["Contrats 2020"])
+        XCTAssertEqual(after.documents.map(\.id), [sibling])
+    }
+
     func testForeignVaultCannotReadCloud() async throws {
         let cloud = MemoryReplica(root: location("."))
         let a = try VaultStore(root: location("a"), keys: VaultKeys(), create: true)
