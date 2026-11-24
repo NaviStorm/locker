@@ -47,6 +47,7 @@ struct RootScreen: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .top, spacing: 0) { IncomingShares(model: model) }
         .background(PrivacyMonitor(activity: { model.activity() }, background: {
             code = ""
             #if os(macOS)

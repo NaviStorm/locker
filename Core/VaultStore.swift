@@ -71,6 +71,7 @@ struct Catalog: Codable {
     var pending: [UUID: UUID]
     var family: FamilyLocal?
     var joinDraft: FamilyJoinDraft?
+    var importedShares: Set<UUID>?
 }
 
 actor VaultStore {
@@ -80,6 +81,7 @@ actor VaultStore {
     private(set) var entries: [UUID: Entry]
     private(set) var pending: [UUID: UUID]
     private(set) var family: FamilyLocal?
+    private(set) var importedShares: Set<UUID>?
     private var joinDraft: FamilyJoinDraft?
 
     init(root: URL, keys: VaultKeys, create: Bool = false, gate: SessionGate = SessionGate()) throws {
@@ -102,6 +104,7 @@ actor VaultStore {
         pending = state.pending
         family = state.family
         joinDraft = state.joinDraft
+        importedShares = state.importedShares
         // A crash can leave encrypted content without a committed catalogue reference.
         for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             where file.pathExtension == "blob" {
@@ -140,10 +143,12 @@ actor VaultStore {
         try commit(entries, queue)
     }
 
-    func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID], family newFamily: FamilyLocal? = nil) throws {
+    func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID], family newFamily: FamilyLocal? = nil,
+                importedShare: UUID? = nil) throws {
         let nextFamily = newFamily ?? family
         try writeCatalog(Catalog(entries: updated, pending: queue, family: nextFamily,
-                                 joinDraft: nextFamily == nil ? joinDraft : nil))
+                                 joinDraft: nextFamily == nil ? joinDraft : nil,
+                                 importedShares: importedShare.map { (importedShares ?? []).union([$0]) } ?? importedShares))
     }
 
     func familyJoinDraft() throws -> FamilyJoinDraft {
@@ -155,7 +160,7 @@ actor VaultStore {
         try gate.check()
         guard family == nil else { throw FamilyError.nonempty }
         try writeCatalog(Catalog(entries: entries, pending: pending, family: nil,
-                                 joinDraft: draft == FamilyJoinDraft() ? nil : draft))
+                                 joinDraft: draft == FamilyJoinDraft() ? nil : draft, importedShares: importedShares))
     }
 
     private func writeCatalog(_ catalog: Catalog) throws {
@@ -166,6 +171,7 @@ actor VaultStore {
             entries = catalog.entries
             pending = catalog.pending
             joinDraft = catalog.joinDraft
+            importedShares = catalog.importedShares
         }
     }
 
