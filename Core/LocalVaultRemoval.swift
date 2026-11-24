@@ -6,15 +6,32 @@ enum VaultKind: String {
 
     init(_ state: FamilyLocal?, keys: VaultKeys) {
         guard let state else { self = .personal; return }
-        self = .family
+        self = Self.protectionReason(state, keys: keys) == nil ? .unsharedFamily : .family
+    }
+
+    static func protectionReason(_ state: FamilyLocal, keys: VaultKeys) -> String? {
         guard let policy = try? state.tip.decoded(),
-              let origin = try? (state.history?.first ?? state.tip).decoded(),
-              origin.parent == nil, origin.author == state.principal,
-              let rescue = try? DeviceIdentity(rescue: keys).card.fingerprint,
-              Set(policy.members.map(\.card.fingerprint)) == Set([state.principal, rescue]),
-              state.removals?.isEmpty != false,
-              policy.parent == nil || state.waiting.isEmpty else { return }
-        self = .unsharedFamily
+              let origin = try? (state.history?.first ?? state.tip).decoded() else {
+            return "Locker ne peut pas vérifier les autorisations de ce coffre."
+        }
+        if state.joinedByInvitation == true { return "Cet appareil a rejoint le coffre d’un autre propriétaire par invitation." }
+        guard origin.parent == nil, origin.author == state.principal else {
+            return "Cet appareil ne dispose pas de l’historique du propriétaire d’origine du coffre."
+        }
+        guard let rescue = try? DeviceIdentity(rescue: keys).card.fingerprint else {
+            return "L’identité de secours du propriétaire n’a pas pu être vérifiée."
+        }
+        let members = Set(policy.members.map(\.card.fingerprint))
+        let expected = Set([state.principal, rescue])
+        let others = members.subtracting(expected)
+        if !others.isEmpty {
+            let names = others.sorted().map { state.displayName(for: $0) ?? String($0.prefix(12)) }
+            return "Accès encore autorisé pour " + names.joined(separator: ", ") + "."
+        }
+        guard members == expected else { return "Les autorisations du propriétaire et du secours sont incomplètes." }
+        if state.removals?.isEmpty == false { return "Le retrait d’un ancien accès attend la confirmation du fournisseur." }
+        if policy.parent != nil && !state.waiting.isEmpty { return "La dernière modification des droits attend la synchronisation." }
+        return nil
     }
 
     var title: String { self == .personal ? "Coffre personnel" : "Coffre familial" }
@@ -73,8 +90,8 @@ extension VaultStore {
               try root.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw VaultError.unavailable }
         return try gate.close {
             let catalog = try Self.readCatalog(root.appendingPathComponent("catalog.v1"), keys: keys)
-            guard VaultKind(family, keys: keys) != .family, VaultKind(catalog.family, keys: keys) != .family else {
-                throw TransportError(message: "Ce coffre familial est protégé contre la suppression.")
+            if let reason = [family, catalog.family].compactMap({ $0 }).compactMap({ VaultKind.protectionReason($0, keys: keys) }).first {
+                throw TransportError(message: reason)
             }
             let destination = base.appendingPathComponent(".removing." + slot + "." + keys.identifier)
             guard let removal = LocalVaultRemoval(directory: destination) else { throw VaultError.unavailable }

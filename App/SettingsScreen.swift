@@ -19,6 +19,8 @@ struct SettingsScreen: View {
     @State private var family = false
     @State private var rotate = false
     @State private var removal: String?
+    @State private var protectionReason: String?
+    @State private var removalChecked = false
     private static var dropboxKey: String {
         Bundle.main.object(forInfoDictionaryKey: "LockerDropboxKey") as? String ?? ""
     }
@@ -81,6 +83,10 @@ struct SettingsScreen: View {
                         Button("Mes appareils") { sharing = true }
                     }
                 }
+                Section("Documents") {
+                    NavigationLink("Sauvegarde et restauration") { BackupScreen(model: model) }
+                    NavigationLink("Corbeille") { TrashScreen(model: model) }
+                }
                 Section("Synchronisation de ce coffre") {
                     Picker("Fournisseur", selection: $draft.provider) {
                         ForEach(Provider.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -115,13 +121,15 @@ struct SettingsScreen: View {
                     }.disabled(busy)
                     if model.configuration.provider != .local {
                         Button("Synchroniser maintenant") { model.sync() }.disabled(model.syncing)
-                        Text(model.syncing ? "Synchronisation en cours…" : model.syncStatus).font(.footnote)
+                        VaultSyncStatus(model: model)
                     }
                     if !errorText.isEmpty { Text(errorText).foregroundStyle(.red) }
                 }
                 Section {
-                    if model.vaultKinds[model.slot] == .family {
-                        Label("Ce coffre familial est protégé contre la suppression.", systemImage: "person.2")
+                    if let protectionReason {
+                        Label(protectionReason, systemImage: "person.2")
+                    } else if !removalChecked {
+                        Text("Vérification des droits du coffre…")
                     } else {
                         Button("Supprimer ce coffre de cet appareil…", role: .destructive) { removal = model.slot }
                             .disabled(model.removingVault)
@@ -137,6 +145,10 @@ struct SettingsScreen: View {
                         catch { errorText = error.localizedDescription }
                     }
                 }
+            }
+            .task(id: model.syncing) { await refreshProtection() }
+            .onChange(of: family) { _, visible in
+                if !visible { Task { await refreshProtection() } }
             }
             .onChange(of: model.configuration) { _, config in
                 if family { draft = config }
@@ -162,6 +174,13 @@ struct SettingsScreen: View {
             .lockerPanel(isPresented: $family) { FamilyScreen(model: model) }
             .sheet(isPresented: $sharing) { IdentityScreen(model: model) }
         }.frame(idealWidth: 530, idealHeight: 520)
+    }
+
+    private func refreshProtection() async {
+        guard let store = model.store else { return }
+        do { protectionReason = try await store.removalProtectionReason() }
+        catch { protectionReason = error.localizedDescription }
+        removalChecked = true
     }
 
     private func save() {

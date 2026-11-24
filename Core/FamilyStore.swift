@@ -34,6 +34,25 @@ extension VaultStore {
         try joinFamily(ticket, from: admin, using: identity())
     }
 
+    func removalProtectionReason() throws -> String? {
+        try gate.check()
+        return family.flatMap { VaultKind.protectionReason($0, keys: keys) }
+    }
+
+    func nameDevice(_ fingerprint: String, name: String) throws {
+        try gate.check()
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 80, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw TransportError(message: "Saisissez un nom de 1 à 80 caractères.")
+        }
+        guard var state = family, try state.tip.decoded().member(fingerprint) != nil,
+              fingerprint != state.recoveryFingerprint else { throw FamilyError.policy }
+        var names = state.deviceNames ?? [:]
+        names[fingerprint] = name
+        state.deviceNames = names
+        try commit(entries, pending, family: state)
+    }
+
     func members() throws -> [Member] {
         try gate.check()
         return try family?.tip.decoded().members ?? []
@@ -120,15 +139,18 @@ extension VaultStore {
 
     func synchronizeFamily(bucket: ObjectBucket, identity: DeviceIdentity) async throws {
         try gate.check()
+        syncProgress.begin("Vérification des droits de partage…")
         try await synchronizePolicy(bucket)
         guard let state = family, try state.tip.decoded().member(identity.card.fingerprint) != nil else { throw FamilyError.denied }
         try await finishProviderRemovals(bucket)
         let digest = state.tip.digest
         let prefix = "e-" + digest + "-"
         let parts = try ObjectReplica(bucket: bucket, cache: root.appendingPathComponent("family-transfers"), gate: gate)
+        syncProgress.begin("Inventaire du coffre familial…")
         let inventory = try await bucket.inventory()
         await parts.seedInventory(inventory)
         let events = inventory.keys.filter { $0.hasPrefix(prefix) && !state.seen.contains($0) }.sorted()
+        syncProgress.begin("Modifications à recevoir", total: events.count)
         for name in events {
             try checkEpoch(digest)
             guard let value = try await bucket.get(name) else { throw VaultError.changed }
@@ -140,9 +162,12 @@ extension VaultStore {
                 try await ingestFamily(body, chunks: parts, epoch: digest)
             }
             try markSeen(name, epoch: digest)
+            syncProgress.advance()
         }
 
-        for (id, revision) in pending {
+        let outgoing = pending
+        syncProgress.begin("Modifications à envoyer", total: outgoing.count)
+        for (id, revision) in outgoing {
             try checkEpoch(digest)
             guard let entry = entries[id], entry.revision == revision else { continue }
             let action: FamilyAction = entry.document == nil ? .delete : (entry.generation == 1 ? .add : .edit)
@@ -162,7 +187,9 @@ extension VaultStore {
             try checkEpoch(digest)
             try markSeen(name, epoch: digest)
             try acknowledge(id, revision: revision)
+            syncProgress.advance()
         }
+        syncProgress.begin("Finalisation du partage…")
         try await finishProviderPermissionChanges(bucket)
     }
 

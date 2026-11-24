@@ -88,9 +88,17 @@ struct FamilyLocal: Codable {
     var contacts: [String: TransportContact]?
     var removals: [TransportContact]?
     var permissionUpdates: [String: UUID]?
+    var deviceNames: [String: String]?
     var history: [PolicyCertificate]?
     var destination: String?
     var bootstrap: Bool?
+    var joinedByInvitation: Bool?
+
+    func displayName(for fingerprint: String) -> String? {
+        if let name = deviceNames?[fingerprint] { return name }
+        if let email = contacts?[fingerprint]?.email, !email.isEmpty { return email }
+        return nil
+    }
 
     var recoveryFingerprint: String? {
         guard let initial = try? (history?.first ?? tip).decoded(), initial.parent == nil else { return nil }
@@ -192,7 +200,7 @@ struct FamilyInvitation: Codable {
         let policy = try invitation.tip.decoded()
         guard invitation.target == identity.card.fingerprint, policy.member(invitation.target) != nil,
               policy.member(trustedAdmin.fingerprint)?.role == .admin else { throw FamilyError.denied }
-        return FamilyLocal(tip: invitation.tip, waiting: [], seen: [], principal: invitation.target, cloudURL: invitation.cloudURL)
+        return FamilyLocal(tip: invitation.tip, waiting: [], seen: [], principal: invitation.target, cloudURL: invitation.cloudURL, joinedByInvitation: true)
     }
 }
 

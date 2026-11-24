@@ -31,6 +31,9 @@ struct FamilyScreen: View {
     @State private var editing: Member?
     @State private var editedRole = FamilyRole.reader
     @State private var recoveryFingerprint: String?
+    @State private var deviceNames: [String: String] = [:]
+    @State private var renamingID: String?
+    @State private var proposedName = ""
     @State private var revoke: Member?
     @State private var reencrypt = true
     @State private var rescue = ""
@@ -87,6 +90,15 @@ struct FamilyScreen: View {
                 if let store = model.store { NearbyFamilyScreen(model: model, role: role, store: store) }
             }
             #endif
+            .alert("Nom de l’appareil dans ce coffre", isPresented: Binding(
+                get: { renamingID != nil }, set: { if !$0 { renamingID = nil } }), presenting: renamingID) { id in
+                TextField("Ex. Mac de mon conjoint", text: $proposedName)
+                Button("Enregistrer") {
+                    let name = proposedName
+                    run(synchronize: false) { try await $0.nameDevice(id, name: name) }
+                }
+                Button("Annuler", role: .cancel) {}
+            } message: { _ in Text("Ce nom est conservé dans le coffre sur cet appareil.") }
             .vaultFormStyle().navigationTitle("Partage familial")
             .onChange(of: model.syncing) {
                 guard !model.syncing, let store = model.store else { return }
@@ -128,8 +140,17 @@ struct FamilyScreen: View {
             ForEach(members, id: \.card.fingerprint) { member in
                 let id = member.card.fingerprint
                 VStack(alignment: .leading, spacing: 6) {
-                    if id == principal { Text("Cet appareil").bold() }
-                    else if id == recoveryFingerprint { Text("Secours du propriétaire").bold() }
+                    if id == recoveryFingerprint {
+                        Text("Secours du propriétaire").bold()
+                    } else {
+                        HStack {
+                            Text(deviceNames[id] ?? (id == principal ? "Cet appareil" : "Appareil du proche")).bold()
+                            Button {
+                                proposedName = deviceNames[id] ?? ""
+                                renamingID = id
+                            } label: { Image(systemName: "pencil") }.accessibilityLabel("Nommer cet appareil")
+                        }
+                    }
                     Text(id.prefix(16)).font(.system(.body, design: .monospaced))
                     Text(member.role.rawValue + " · " + (member.documents.map { "\($0.count) document(s)" } ?? "Tout le coffre"))
                         .font(.caption)
@@ -378,6 +399,10 @@ struct FamilyScreen: View {
         recoveryFingerprint = family?.recoveryFingerprint
         hasCloudInvitation = family?.cloudURL != nil
         members = try await store.members()
+        deviceNames = Dictionary(uniqueKeysWithValues: members.compactMap { member -> (String, String)? in
+            let id = member.card.fingerprint
+            return family?.displayName(for: id).map { (id, $0) }
+        })
         if let original = editing, !members.contains(where: {
             $0.card == original.card && $0.role == original.role && $0.documents == original.documents
         }) { editing = nil }
@@ -393,7 +418,7 @@ struct FamilyScreen: View {
         }
     }
 
-    private func run(_ operation: @escaping (VaultStore) async throws -> Void) {
+    private func run(synchronize: Bool = true, _ operation: @escaping (VaultStore) async throws -> Void) {
         guard !working, let store = model.store else { return }
         working = true
         problem = ""
@@ -403,7 +428,7 @@ struct FamilyScreen: View {
                 try await operation(store)
                 try await refresh(store)
                 model.library = try await store.library()
-                model.sync()
+                if synchronize { model.sync() }
             } catch {
                 try? await refresh(store)
                 problem = error.localizedDescription

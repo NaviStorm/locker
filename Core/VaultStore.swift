@@ -26,6 +26,7 @@ struct Entry: Codable, Equatable {
     var generation: UInt64
     var revision: UUID
     var document: Document?
+    var trash: TrashItem?
     var tombstoneScope: UUID?
     var tombstoneAuthor: String?
     var tombstoneNonce: UUID?
@@ -82,11 +83,15 @@ enum DocumentSortField: String {
 }
 
 struct VaultLibrary {
+    let pendingCount: Int
+    let pendingSharingCount: Int
     let documents: [ListedDocument]
     let folders: [String]
     private let history: [UUID: [ListedDocument]]
 
-    init(documents: [ListedDocument] = [], folders: [String] = []) {
+    init(documents: [ListedDocument] = [], folders: [String] = [], pendingCount: Int = 0, pendingSharingCount: Int = 0) {
+        self.pendingSharingCount = pendingSharingCount
+        self.pendingCount = pendingCount
         history = Dictionary(grouping: documents, by: \.lineage).mapValues { versions in
             var ordered = versions.sorted { lhs, rhs in
                 let left = lhs.created ?? .distantPast, right = rhs.created ?? .distantPast
@@ -140,6 +145,7 @@ struct Catalog: Codable {
 }
 
 actor VaultStore {
+    nonisolated let syncProgress = SyncProgressMeter()
     nonisolated let gate: SessionGate
     let root: URL
     let keys: VaultKeys
@@ -266,7 +272,7 @@ actor VaultStore {
         var folders = Set<String>()
         var documents = [ListedDocument]()
         for entry in entries.values {
-            guard let document = entry.document else { continue }
+            guard let document = entry.document, entry.trash == nil else { continue }
             if document.isFolder == true {
                 folders.insert(document.labels.name)
             } else {
@@ -274,7 +280,9 @@ actor VaultStore {
                                                 labels: document.labels, size: document.size))
             }
         }
-        return VaultLibrary(documents: DocumentSortField.name.sorted(documents, ascending: true), folders: Array(folders))
+        let sharingCount = (family?.waiting.count ?? 0) + (family?.removals?.count ?? 0) + (family?.permissionUpdates?.count ?? 0)
+        return VaultLibrary(documents: DocumentSortField.name.sorted(documents, ascending: true), folders: Array(folders),
+                            pendingCount: pending.count, pendingSharingCount: sharingCount)
     }
 
     func createFolder(_ proposed: String, in parent: String = "") throws -> String {
@@ -306,49 +314,41 @@ actor VaultStore {
     }
 
     func deleteFolder(_ folder: String) throws {
-        try updateFolder(folder, destination: nil)
+        let library = try library()
+        guard !folder.isEmpty, library.folders.contains(folder) else { throw VaultError.unavailable }
+        func inside(_ path: String) -> Bool { path == folder || path.hasPrefix(folder + "/") }
+        let scopes = Set(library.documents.filter { inside($0.labels.folder) }.map(\.lineage))
+        let selected = entries.values.filter {
+            guard let doc = $0.document, $0.trash == nil else { return false }
+            return doc.isFolder == true ? inside(doc.labels.name) : scopes.contains($0.scope)
+        }
+        try markTrash(selected, item: TrashItem(name: folder, isFolder: true))
     }
 
-    private func updateFolder(_ folder: String, destination: String?) throws {
-        let library = try library()
-        let folders = library.folders
-        guard !folder.isEmpty, folders.contains(folder) else {
-            throw TransportError(message: "Ce dossier n’existe plus dans le coffre.")
+    private func updateFolder(_ folder: String, destination: String) throws {
+        let folders = try library().folders
+        guard !folder.isEmpty, folders.contains(folder) else { throw VaultError.unavailable }
+        if destination == folder { return }
+        func inside(_ path: String) -> Bool { path == folder || path.hasPrefix(folder + "/") }
+        if folders.contains(where: { !inside($0) && ($0.caseInsensitiveCompare(destination) == .orderedSame ||
+            $0.range(of: destination + "/", options: [.anchored, .caseInsensitive]) != nil) }) {
+            throw TransportError(message: "Un dossier porte déjà ce nom.")
         }
-        func isAffected(_ path: String) -> Bool { path == folder || path.hasPrefix(folder + "/") }
-        if let destination {
-            if destination == folder { return }
-            if folders.contains(where: { path in
-                !isAffected(path) && (path.caseInsensitiveCompare(destination) == .orderedSame
-                    || path.range(of: destination + "/", options: [.anchored, .caseInsensitive]) != nil)
-            }) {
-                throw TransportError(message: "Un dossier porte déjà ce nom.")
-            }
-        }
-        let deletedLineages = Set(library.documents.filter { isAffected($0.labels.folder) }.map(\.lineage))
         var updated = entries
         var queue = pending
-        var removed = [UUID]()
         for entry in entries.values {
-            guard let document = entry.document else { continue }
-            let marker = document.isFolder == true
-            let path = marker ? document.labels.name : document.labels.folder
-            let affected = destination == nil && !marker ? deletedLineages.contains(entry.scope) : isAffected(path)
-            guard affected else { continue }
-            let labels = destination.map { target in
-                var labels = document.labels
-                let newPath = target + path.dropFirst(folder.count)
-                if marker { labels.name = newPath } else { labels.folder = newPath }
-                return labels
-            }
+            guard let doc = entry.document, entry.trash == nil else { continue }
+            let marker = doc.isFolder == true
+            let path = marker ? doc.labels.name : doc.labels.folder
+            guard inside(path) else { continue }
+            var labels = doc.labels
+            let renamed = destination + path.dropFirst(folder.count)
+            if marker { labels.name = renamed } else { labels.folder = renamed }
             let next = try changedEntry(entry, labels: labels)
             updated[next.id] = next
             queue[next.id] = next.revision
-            if labels == nil { removed.append(next.id) }
         }
         try commit(updated, queue)
-        // A locked or interrupted cleanup can also finish when the catalogue is reopened.
-        for id in removed { try? FileManager.default.removeItem(at: blob(id)) }
     }
 
     @discardableResult
@@ -395,7 +395,7 @@ actor VaultStore {
     private func makeDocument(name: String, parent: UUID?, folder: String, isFolder: Bool? = nil,
                               write: (UUID, SymmetricKey, URL) throws -> Int64) throws -> Entry {
         let original = parent.flatMap { entries[$0]?.document }
-        if parent != nil && (original == nil || original?.isFolder == true) { throw VaultError.unavailable }
+        if let parent, original == nil || original?.isFolder == true || entries[parent]?.trash != nil { throw VaultError.unavailable }
         let nonce = UUID()
         let parentScope = parent.flatMap { entries[$0]?.scope }
         let id = family.map { FamilyEvent.scopedID(author: $0.principal, nonce: nonce, lineage: parentScope) } ?? UUID()
@@ -419,7 +419,7 @@ actor VaultStore {
               try library().versions(of: head.scope).first?.id == current,
               !ids.contains(current), ids.allSatisfy({ id in
                   guard let entry = entries[id] else { return false }
-                  return entry.document != nil && entry.document?.isFolder != true && entry.scope == head.scope
+                  return entry.document != nil && entry.trash == nil && entry.document?.isFolder != true && entry.scope == head.scope
               }) else { throw TransportError(message: "L’historique a changé. Rouvrez les versions du document.") }
     }
 
@@ -451,7 +451,7 @@ actor VaultStore {
 
     private func labelsForDocument(_ id: UUID) throws -> Labels {
         try gate.check()
-        guard let document = entries[id]?.document, document.isFolder != true else { throw VaultError.unavailable }
+        guard let entry = entries[id], entry.trash == nil, let document = entry.document, document.isFolder != true else { throw VaultError.unavailable }
         return document.labels
     }
 
@@ -479,7 +479,7 @@ actor VaultStore {
         var queue = pending
         var changed = false
         for id in ids {
-            guard let entry = entries[id], let document = entry.document, document.isFolder != true else {
+            guard let entry = entries[id], entry.trash == nil, let document = entry.document, document.isFolder != true else {
                 throw VaultError.unavailable
             }
             guard document.labels.folder != folder else { continue }
@@ -499,7 +499,7 @@ actor VaultStore {
         try replace(changedEntry(entry, labels: labels))
     }
 
-    private func changedEntry(_ original: Entry, labels: Labels?) throws -> Entry {
+    func changedEntry(_ original: Entry, labels: Labels?) throws -> Entry {
         var entry = original
         try authorizeLocal(labels == nil ? .delete : .edit, scope: entry.scope)
         if let labels, var document = entry.document {
@@ -513,6 +513,7 @@ actor VaultStore {
             entry.tombstoneAuthor = entry.document?.originAuthor
             entry.tombstoneNonce = entry.document?.originNonce
             entry.document = nil
+            entry.trash = nil
         }
         guard entry.generation < UInt64.max else { throw VaultError.damaged }
         entry.generation += 1

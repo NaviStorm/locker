@@ -23,6 +23,7 @@ struct LibraryScreen: View {
     #endif
     @State private var resumedNearby: NearbyRole?
     @State private var settings = false
+    @State private var showTrash = false
     @State private var importer = false
     @State private var versionImporter = false
     @State private var renamingFolder: String?
@@ -162,6 +163,7 @@ struct LibraryScreen: View {
                     categoryPicker
                 } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
                 Menu {
+                    trashButton
                     Button("Partage familial", systemImage: "person.2") { familySharing = true }
                     settingsButton
                     lockButton
@@ -408,14 +410,18 @@ struct LibraryScreen: View {
         .confirmationDialog("Supprimer le dossier « \(deletingFolder ?? "") » ?", isPresented: Binding(
             get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }),
             titleVisibility: .visible, presenting: deletingFolder) { name in
-            Button("Supprimer le dossier et son contenu", role: .destructive) {
+            Button("Mettre le dossier à la corbeille", role: .destructive) {
                 model.perform { store in
                     try await store.deleteFolder(name)
                     if folder == name || folder.hasPrefix(name + "/") { folder = VaultLibrary.parent(of: name); selection = nil }
                 }
             }
             Button("Annuler", role: .cancel) {}
-        } message: { _ in Text("Les documents, leurs versions et les sous-dossiers de cet emplacement seront supprimés.") }
+        } message: { _ in Text("Les documents, leurs versions et les sous-dossiers pourront être restaurés depuis la corbeille.") }
+        .lockerPanel(isPresented: $showTrash) {
+            NavigationStack { TrashScreen(model: model).modifier(VaultDismissToolbar()) }
+                .frame(idealWidth: 500, idealHeight: 460)
+        }
         .lockerPanel(isPresented: $settings) { SettingsScreen(model: model) }
         .sheet(isPresented: $scanner) {
             ScanScreen { result in
@@ -455,16 +461,16 @@ struct LibraryScreen: View {
         }
         .confirmationDialog("Supprimer « \(pendingDelete?.labels.name ?? "") » ?", isPresented: Binding(get: { pendingDelete != nil },
             set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible, presenting: pendingDelete) { item in
-            Button("Supprimer", role: .destructive) {
+            Button("Mettre à la corbeille", role: .destructive) {
                 model.perform { store in
-                    try await store.change(item.id, labels: nil)
+                    try await store.trashDocument(item.id)
                     if selection == item.id { selection = nil }
                 }
             }
             Button("Annuler", role: .cancel) {}
         } message: { item in
             if model.library.versions(of: item.lineage).count > 1 {
-                Text("La suppression concerne uniquement la version sélectionnée.")
+                Text("Le document et toutes ses versions seront placés dans la corbeille.")
             }
         }
     }
@@ -489,6 +495,7 @@ struct LibraryScreen: View {
                 .help(category.isEmpty ? "Filtrer par catégorie" : "Catégorie : \(category)")
                 sortMenu
                 Spacer(minLength: 8)
+                trashButton
                 settingsButton
                 lockButton
             }
@@ -538,6 +545,10 @@ struct LibraryScreen: View {
         Button("Importer un fichier", systemImage: "doc.badge.plus") { importer = true }
             .help("Importer un fichier")
             .disabled(model.extracting)
+    }
+
+    private var trashButton: some View {
+        Button("Ouvrir la corbeille", systemImage: "trash") { showTrash = true }.help("Ouvrir la corbeille")
     }
 
     private var settingsButton: some View {

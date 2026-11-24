@@ -113,10 +113,12 @@ final class LockerModel {
 
     func requestLocalRemoval() {
         guard let store, store.root.lastPathComponent == slot, !removingVault else { return }
-        if vaultKinds[slot] == .family {
-            problem = "Ce coffre familial est protégé contre la suppression."
-        } else {
-            removalRequest = slot
+        Task {
+            do {
+                let reason = try await store.removalProtectionReason()
+                guard self.store === store else { return }
+                if let reason { problem = reason } else { removalRequest = slot }
+            } catch { if self.store === store { problem = error.localizedDescription } }
         }
     }
 
@@ -267,6 +269,7 @@ final class LockerModel {
     func sync() {
         guard removalRequest == nil, !removingVault, !syncing, configuration.provider != .local, let session = store else { return }
         syncing = true
+        session.syncProgress.begin("Connexion au fournisseur…")
         let provider = configuration.provider
         syncTask = Task {
             do {
@@ -274,6 +277,7 @@ final class LockerModel {
                 let updated = try await session.library()
                 guard store === session, !Task.isCancelled else { return }
                 library = updated
+                vaultKinds[slot] = VaultKind.cached(in: session.root)
                 syncStatus = "À jour · " + Date.now.formatted(date: .omitted, time: .shortened)
             } catch {
                 guard store === session, !Task.isCancelled else { return }

@@ -71,6 +71,7 @@ extension VaultStore {
     func syncConfigured() async throws {
         let config = try settings()
         guard config.provider != .local else { return }
+        syncProgress.begin("Connexion à " + config.provider.rawValue + "…")
         let bucket = try await objectBucket(config)
         if family != nil {
             try await synchronizeFamily(bucket: bucket, identity: identity())
@@ -84,6 +85,7 @@ extension VaultStore {
                 if FileManager.default.fileExists(atPath: cache.path) { try FileManager.default.removeItem(at: cache) }
             }
         }
+        try recordSuccessfulSync(for: config.destination)
     }
 
     func objectBucket(_ config: ProviderSettings) async throws -> ObjectBucket {
