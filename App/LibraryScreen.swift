@@ -127,8 +127,10 @@ struct LibraryScreen: View {
         .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
         .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
         .onChange(of: folder) { category = ""; query = ""; marked.removeAll(); selectingDocuments = false }
-        .onChange(of: selectedDocument?.id) { _, id in
-            if id == nil { selection = nil }
+        .onChange(of: folderDocuments) { previous, current in
+            guard let id = selection, !current.contains(where: { $0.id == id }),
+                  let old = previous.first(where: { $0.id == id }) else { return }
+            selection = current.first { $0.lineage == old.lineage }?.id
         }
         #if os(iOS)
         .toolbar {
@@ -417,7 +419,7 @@ struct LibraryScreen: View {
             }
             Button("Annuler", role: .cancel) {}
         } message: { item in
-            if model.documents.contains(where: { $0.lineage == item.lineage && $0.id != item.id }) {
+            if model.library.versions(of: item.lineage).count > 1 {
                 Text("La suppression concerne uniquement la version sélectionnée.")
             }
         }

@@ -265,7 +265,8 @@ final class AppSessionTests: VaultTestCase {
         for _ in 0..<40 where selected == nil { try await Task.sleep(for: .milliseconds(50)) }
         let editedID = try XCTUnwrap(selected)
         XCTAssertNotEqual(editedID, id)
-        XCTAssertEqual(model.documents.count, 2)
+        XCTAssertEqual(model.documents.map(\.id), [editedID])
+        XCTAssertEqual(model.library.versions(of: id).map(\.id), [editedID, id])
         let image = try await store.photoEditingPreview(editedID)
         XCTAssertLessThan(image.width, image.height)
     }

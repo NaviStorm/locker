@@ -22,10 +22,6 @@ struct FamilyScreen: View {
     @State private var reencrypt = true
     @State private var rescue = ""
     @State private var kit = ""
-    private var lineages: [ListedDocument] {
-        var seen = Set<UUID>()
-        return model.documents.filter { seen.insert($0.lineage).inserted }
-    }
     private var isAdmin: Bool { members.contains { $0.card.fingerprint == principal && $0.role == .admin } }
 
     var body: some View {
@@ -81,7 +77,7 @@ struct FamilyScreen: View {
                         if role != .admin {
                             Toggle("Limiter à certains documents", isOn: $restricted)
                             if restricted {
-                                ForEach(lineages) { row in
+                                ForEach(model.documents) { row in
                                     Toggle(row.labels.name, isOn: Binding(get: { chosen.contains(row.lineage) }, set: {
                                         if $0 { chosen.insert(row.lineage) } else { chosen.remove(row.lineage) }
                                     }))

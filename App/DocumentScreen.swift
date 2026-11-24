@@ -9,51 +9,18 @@ struct DocumentScreen<Actions: View>: View {
     let addVersion: () -> Void
     let actions: Actions
     @State private var bytes: Data?
-    @State private var pdf: PagedPDF?
-    @State private var notice = ""
     @State private var editing = false
     @State private var editingPhoto = false
-    @State private var largePhoto: CGImage?
-    private var isPhoto: Bool {
-        UTType(filenameExtension: (item.labels.name as NSString).pathExtension)?.conforms(to: .image) == true
-    }
+    @State private var showVersions = false
     @State private var exporting = false
     @State private var history: [Labels] = []
     @State private var showHistory = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            if let pdf { LargePDFScreen(pdf: pdf) }
-            else if let largePhoto {
-                ZoomablePhoto(image: Image(decorative: largePhoto, scale: 1),
-                              size: CGSize(width: largePhoto.width, height: largePhoto.height))
-            }
-            else if let bytes {
-                DocumentPreview(data: bytes, name: item.labels.name)
-            } else if notice.isEmpty { ProgressView() }
-            else { ContentUnavailableView("Aperçu indisponible", systemImage: "doc", description: Text(notice)) }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.lockerCanvas)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 10) {
-                if !item.labels.folder.isEmpty {
-                    Label(item.labels.folder, systemImage: "folder").lineLimit(1)
-                }
-                if !item.labels.category.isEmpty {
-                    Label(item.labels.category, systemImage: "tag").lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Text(item.size.formatted(.byteCount(style: .file))).monospacedDigit()
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(.bar)
-        }
-        .navigationTitle(item.labels.name)
+        StoredDocumentPreview(model: model, item: item) { bytes = $0 }
         .toolbar {
             ToolbarItemGroup {
-                if isPhoto {
+                if item.isPhoto {
                     Button("Modifier la photo", systemImage: "slider.horizontal.3") { editingPhoto = true }
                         .help("Modifier la photo")
                 }
@@ -67,36 +34,15 @@ struct DocumentScreen<Actions: View>: View {
                     Button("Exporter dans un dossier…", systemImage: "folder") { exporting = true }
                     Button("Modifier la fiche", systemImage: "pencil") { editing = true }
                     Button("Ajouter une version", systemImage: "doc.on.doc", action: addVersion)
-                    Menu("Versions du document") {
-                        ForEach(model.documents.filter { $0.lineage == item.lineage }.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }) { row in
-                            Button(row.labels.name + " · " + (row.created?.formatted() ?? String(row.id.uuidString.prefix(6)))) { select(row.id) }
-                        }
-                    }
+                    Button("Versions du document", systemImage: "clock.arrow.circlepath") { showVersions = true }
                     Button("Historique de la fiche") {
                         model.perform { store in history = try await store.labelHistory(item.id); showHistory = true }
                     }
                 } label: { Label("Actions", systemImage: "ellipsis.circle") }
             }
         }
-        .task(id: item.id) {
-            guard let store = model.store else { return }
-            do {
-                if item.size > 32 * 1024 * 1024, (item.labels.name as NSString).pathExtension.lowercased() == "pdf" {
-                    let paged = try await store.pagedPDF(item.id)
-                    try store.gate.check()
-                    pdf = paged
-                    return
-                }
-                if item.size > 32 * 1024 * 1024, isPhoto {
-                    let preview = try await store.photoEditingPreview(item.id, maxPixelSize: 4096)
-                    try store.gate.check()
-                    largePhoto = preview
-                    return
-                }
-                let loaded = try await store.preview(item.id)
-                try store.gate.check()
-                bytes = loaded
-            } catch { notice = error.localizedDescription }
+        .lockerPanel(isPresented: $showVersions) {
+            VersionHistoryScreen(model: model, lineage: item.lineage, select: select)
         }
         .lockerPanel(isPresented: $editingPhoto) {
             if let store = model.store {
@@ -129,6 +75,172 @@ struct DocumentScreen<Actions: View>: View {
                     throw TransportError(message: "Renommez le document avant son exportation.")
                 }
                 try await store.export(item.id, to: dir.appendingPathComponent(name))
+            }
+        }
+    }
+}
+
+private extension ListedDocument {
+    var isPhoto: Bool {
+        UTType(filenameExtension: (labels.name as NSString).pathExtension)?.conforms(to: .image) == true
+    }
+}
+
+private struct StoredDocumentPreview: View {
+    let model: LockerModel
+    let item: ListedDocument
+    var onLoad: ((Data) -> Void)? = nil
+    @State private var bytes: Data?
+    @State private var largePhoto: CGImage?
+    @State private var pdf: PagedPDF?
+    @State private var notice = ""
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if let pdf { LargePDFScreen(pdf: pdf) }
+            else if let largePhoto {
+                ZoomablePhoto(image: Image(decorative: largePhoto, scale: 1),
+                              size: CGSize(width: largePhoto.width, height: largePhoto.height))
+            }
+            else if let bytes {
+                DocumentPreview(data: bytes, name: item.labels.name)
+            } else if notice.isEmpty { ProgressView() }
+            else { ContentUnavailableView("Aperçu indisponible", systemImage: "doc", description: Text(notice)) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.lockerCanvas)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 10) {
+                if !item.labels.folder.isEmpty {
+                    Label(item.labels.folder, systemImage: "folder").lineLimit(1)
+                }
+                if !item.labels.category.isEmpty {
+                    Label(item.labels.category, systemImage: "tag").lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text(item.size.formatted(.byteCount(style: .file))).monospacedDigit()
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(.bar)
+        }
+        .navigationTitle(item.labels.name)
+        .task(id: item.id) {
+            guard let store = model.store else { return }
+            do {
+                if item.size > 32 * 1024 * 1024, (item.labels.name as NSString).pathExtension.lowercased() == "pdf" {
+                    let paged = try await store.pagedPDF(item.id)
+                    try store.gate.check()
+                    pdf = paged
+                    return
+                }
+                if item.size > 32 * 1024 * 1024, item.isPhoto {
+                    let preview = try await store.photoEditingPreview(item.id, maxPixelSize: 4096)
+                    try store.gate.check()
+                    largePhoto = preview
+                    return
+                }
+                let loaded = try await store.preview(item.id)
+                try store.gate.check()
+                try Task.checkCancellation()
+                bytes = loaded
+                onLoad?(loaded)
+            } catch { notice = error.localizedDescription }
+        }
+    }
+}
+
+private struct VersionHistoryScreen: View {
+    let model: LockerModel
+    let lineage: UUID
+    let select: (UUID) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var deletion: Deletion?
+    @State private var busy = false
+    @State private var problem: String?
+
+    private struct Deletion {
+        let ids: Set<UUID>
+        let current: UUID
+    }
+
+    var body: some View {
+        let versions = model.library.versions(of: lineage)
+        NavigationStack {
+            List {
+                if let current = versions.first {
+                    Section("Version actuelle") { versionLabel(current) }
+                    Section("Anciennes versions") {
+                        if versions.count == 1 { Text("Aucune ancienne version.").foregroundStyle(.secondary) }
+                        ForEach(versions.dropFirst()) { version in
+                            HStack {
+                                NavigationLink {
+                                    StoredDocumentPreview(model: model, item: version).id(version.id)
+                                } label: { versionLabel(version) }
+                                Menu {
+                                    Button("Restaurer cette version", systemImage: "arrow.counterclockwise") {
+                                        update { try await $0.restoreVersion(version.id, current: current.id) }
+                                    }
+                                    Button("Supprimer cette version…", systemImage: "trash", role: .destructive) {
+                                        deletion = Deletion(ids: [version.id], current: current.id)
+                                    }
+                                } label: { Label("Actions de la version", systemImage: "ellipsis.circle") }
+                                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    if versions.count > 1 {
+                        Button("Supprimer toutes les anciennes versions…", role: .destructive) {
+                            deletion = Deletion(ids: Set(versions.dropFirst().map(\.id)), current: current.id)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Versions du document")
+            .modifier(VaultDismissToolbar())
+            .disabled(busy)
+            .overlay { if busy { ProgressView() } }
+            .confirmationDialog("Supprimer définitivement les versions sélectionnées ?",
+                isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } }),
+                titleVisibility: .visible, presenting: deletion) { request in
+                Button(request.ids.count == 1 ? "Supprimer 1 version" : "Supprimer \(request.ids.count) versions", role: .destructive) {
+                    update { store in
+                        try await store.deleteVersions(request.ids, current: request.current)
+                        return nil
+                    }
+                }
+                Button("Annuler", role: .cancel) {}
+            } message: { _ in Text("La version actuelle sera conservée.") }
+            .alert("Historique du document", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+                Button("OK") { problem = nil }
+            } message: { Text(problem ?? "") }
+        }
+        .frame(idealWidth: 520, idealHeight: 440)
+    }
+
+    private func versionLabel(_ item: ListedDocument) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(item.labels.name)
+            let date = item.created?.formatted(date: .abbreviated, time: .standard) ?? "Date inconnue"
+            Text(date + " · " + item.size.formatted(.byteCount(style: .file))).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func update(_ operation: @escaping (VaultStore) async throws -> UUID?) {
+        guard !busy, let store = model.store else { return }
+        busy = true
+        model.activity()
+        Task {
+            defer { busy = false }
+            do {
+                let restored = try await operation(store)
+                let library = try await store.library()
+                guard model.store === store else { return }
+                model.library = library
+                if let restored { dismiss(); select(restored) }
+                model.sync()
+            } catch {
+                if model.store === store { problem = error.localizedDescription }
             }
         }
     }

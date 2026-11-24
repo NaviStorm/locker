@@ -50,6 +50,7 @@ struct Entry: Codable, Equatable {
 }
 
 struct ListedDocument: Identifiable, Equatable {
+    var parent: UUID? = nil
     let lineage: UUID
     let created: Date?
     let id: UUID
@@ -58,8 +59,41 @@ struct ListedDocument: Identifiable, Equatable {
 }
 
 struct VaultLibrary {
-    var documents: [ListedDocument] = []
-    var folders: [String] = []
+    let documents: [ListedDocument]
+    let folders: [String]
+    private let history: [UUID: [ListedDocument]]
+
+    init(documents: [ListedDocument] = [], folders: [String] = []) {
+        history = Dictionary(grouping: documents, by: \.lineage).mapValues { versions in
+            var ordered = versions.sorted { lhs, rhs in
+                let left = lhs.created ?? .distantPast, right = rhs.created ?? .distantPast
+                if left != right { return left > right }
+                if lhs.id == lhs.lineage { return false }
+                if rhs.id == rhs.lineage { return true }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+            // A device with an older clock can still create a successor of a newer-dated version.
+            let parents = Set(versions.compactMap(\.parent))
+            if let head = ordered.firstIndex(where: { !parents.contains($0.id) }), head != 0 {
+                let latest = ordered.remove(at: head)
+                ordered.insert(latest, at: 0)
+            }
+            return ordered
+        }
+        let heads = Set(history.values.compactMap { $0.first?.id })
+        self.documents = documents.filter { heads.contains($0.id) }
+        var paths = Set(folders)
+        for document in self.documents where !document.labels.folder.isEmpty {
+            paths.insert(document.labels.folder)
+        }
+        for path in paths {
+            var parent = Self.parent(of: path)
+            while !parent.isEmpty && paths.insert(parent).inserted { parent = Self.parent(of: parent) }
+        }
+        self.folders = paths.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    func versions(of lineage: UUID) -> [ListedDocument] { history[lineage] ?? [] }
 
     static func parent(of path: String) -> String {
         path.lastIndex(of: "/").map { String(path[..<$0]) } ?? ""
@@ -207,20 +241,14 @@ actor VaultStore {
             if document.isFolder == true {
                 folders.insert(document.labels.name)
             } else {
-                if !document.labels.folder.isEmpty { folders.insert(document.labels.folder) }
-                documents.append(ListedDocument(lineage: entry.scope, created: document.created, id: entry.id,
+                documents.append(ListedDocument(parent: document.parent, lineage: entry.scope, created: document.created, id: entry.id,
                                                 labels: document.labels, size: document.size))
             }
         }
-        // An imported archive or a shared document can contain a path without parent markers.
-        for path in folders {
-            var parent = VaultLibrary.parent(of: path)
-            while !parent.isEmpty && folders.insert(parent).inserted {
-                parent = VaultLibrary.parent(of: parent)
-            }
-        }
-        return VaultLibrary(documents: documents.sorted { $0.labels.name.localizedStandardCompare($1.labels.name) == .orderedAscending },
-                            folders: folders.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        return VaultLibrary(documents: documents.sorted {
+            let order = $0.labels.name.localizedStandardCompare($1.labels.name)
+            return order == .orderedSame ? $0.id.uuidString < $1.id.uuidString : order == .orderedAscending
+        }, folders: Array(folders))
     }
 
     func createFolder(_ proposed: String, in parent: String = "") throws -> String {
@@ -256,7 +284,8 @@ actor VaultStore {
     }
 
     private func updateFolder(_ folder: String, destination: String?) throws {
-        let folders = try library().folders
+        let library = try library()
+        let folders = library.folders
         guard !folder.isEmpty, folders.contains(folder) else {
             throw TransportError(message: "Ce dossier n’existe plus dans le coffre.")
         }
@@ -270,6 +299,7 @@ actor VaultStore {
                 throw TransportError(message: "Un dossier porte déjà ce nom.")
             }
         }
+        let deletedLineages = Set(library.documents.filter { isAffected($0.labels.folder) }.map(\.lineage))
         var updated = entries
         var queue = pending
         var removed = [UUID]()
@@ -277,7 +307,8 @@ actor VaultStore {
             guard let document = entry.document else { continue }
             let marker = document.isFolder == true
             let path = marker ? document.labels.name : document.labels.folder
-            guard isAffected(path) else { continue }
+            let affected = destination == nil && !marker ? deletedLineages.contains(entry.scope) : isAffected(path)
+            guard affected else { continue }
             let labels = destination.map { target in
                 var labels = document.labels
                 let newPath = target + path.dropFirst(folder.count)
@@ -318,6 +349,10 @@ actor VaultStore {
                      read: () throws -> Data) throws -> UUID {
         var entry = try stageDocument(name: name, parent: parent, folder: folder, isFolder: isFolder, read: read)
         if let labels { entry.document?.labels = labels }
+        return try publishVersion(entry)
+    }
+
+    private func publishVersion(_ entry: Entry) throws -> UUID {
         do { try replace(entry) }
         catch { try? FileManager.default.removeItem(at: blob(entry.id)); throw error }
         return entry.id
@@ -326,6 +361,13 @@ actor VaultStore {
     // The caller publishes the encrypted blob with a catalogue commit, or discards it.
     func stageDocument(name: String, parent: UUID? = nil, folder: String, isFolder: Bool? = nil,
                        read: () throws -> Data) throws -> Entry {
+        try makeDocument(name: name, parent: parent, folder: folder, isFolder: isFolder) { id, key, url in
+            try BlockCipher.encrypt(id: id, key: key, to: url, gate: gate, read: read)
+        }
+    }
+
+    private func makeDocument(name: String, parent: UUID?, folder: String, isFolder: Bool? = nil,
+                              write: (UUID, SymmetricKey, URL) throws -> Int64) throws -> Entry {
         let original = parent.flatMap { entries[$0]?.document }
         if parent != nil && (original == nil || original?.isFolder == true) { throw VaultError.unavailable }
         let nonce = UUID()
@@ -334,12 +376,51 @@ actor VaultStore {
         let scope = parentScope ?? id
         try authorizeLocal(.add, scope: scope)
         let key = SymmetricKey(size: .bits256)
-        let url = blob(id)
-        let size = try BlockCipher.encrypt(id: id, key: key, to: url, gate: gate, read: read)
+        var created = Date()
+        if let parentScope, let last = entries.values.lazy.filter({ $0.scope == parentScope })
+            .compactMap({ $0.document?.created }).max(), last >= created {
+            created = last.addingTimeInterval(0.001)
+        }
+        let size = try write(id, key, blob(id))
         let document = Document(labels: Labels(name: name, folder: original?.labels.folder ?? folder),
                                 key: key.withUnsafeBytes { Data($0) }, size: size, originAuthor: family?.principal,
-                                originNonce: nonce, lineage: scope, parent: parent, created: Date(), isFolder: isFolder)
+                                originNonce: nonce, lineage: scope, parent: parent, created: created, isFolder: isFolder)
         return Entry(id: id, generation: 1, revision: UUID(), document: document)
+    }
+
+    private func validateHistory(_ ids: Set<UUID>, current: UUID) throws {
+        guard let head = entries[current], head.document?.isFolder != true,
+              try library().versions(of: head.scope).first?.id == current,
+              !ids.contains(current), ids.allSatisfy({ id in
+                  guard let entry = entries[id] else { return false }
+                  return entry.document != nil && entry.document?.isFolder != true && entry.scope == head.scope
+              }) else { throw TransportError(message: "L’historique a changé. Rouvrez les versions du document.") }
+    }
+
+    func restoreVersion(_ id: UUID, current: UUID) throws -> UUID {
+        try validateHistory([id], current: current)
+        guard let source = entries[id]?.document, let active = entries[current]?.document else { throw VaultError.unavailable }
+        var restored = try makeDocument(name: source.labels.name, parent: current, folder: active.labels.folder) { target, key, url in
+            try BlockCipher.reencrypt(id: id, info: source, source: blob(id), as: target, using: key, to: url, gate: gate)
+            return source.size
+        }
+        restored.document?.labels = source.labels
+        restored.document?.labels.folder = active.labels.folder
+        return try publishVersion(restored)
+    }
+
+    func deleteVersions(_ ids: Set<UUID>, current: UUID) throws {
+        try validateHistory(ids, current: current)
+        var updated = entries
+        var queue = pending
+        for id in ids {
+            guard let entry = entries[id] else { throw VaultError.unavailable }
+            let deleted = try changedEntry(entry, labels: nil)
+            updated[id] = deleted
+            queue[id] = deleted.revision
+        }
+        try commit(updated, queue)
+        for id in ids { try? FileManager.default.removeItem(at: blob(id)) }
     }
 
     private func labelsForDocument(_ id: UUID) throws -> Labels {

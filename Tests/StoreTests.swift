@@ -20,6 +20,35 @@ class VaultTestCase: XCTestCase {
 }
 
 final class StoreTests: VaultTestCase {
+    func testHistorySelectsSuccessorWhenDeviceClocksDisagree() {
+        let original = UUID(), child = UUID()
+        let labels = Labels(name: "Note.txt")
+        let first = ListedDocument(lineage: original, created: .now, id: original, labels: labels, size: 1)
+        let next = ListedDocument(parent: original, lineage: original, created: .distantPast, id: child, labels: labels, size: 1)
+        for rows in [[first, next], [next, first]] {
+            let library = VaultLibrary(documents: rows)
+            XCTAssertEqual(library.documents.map(\.id), [child])
+            XCTAssertEqual(library.versions(of: original).map(\.id), [child, original])
+        }
+    }
+
+    func testDeletingFolderCleansOnlyHistoriesOfItsVisibleDocuments() async throws {
+        let store = try VaultStore(root: location("dossiers"), keys: VaultKeys(), create: true)
+        let folder = try await store.createFolder("Archives")
+        let a = try await store.importData(Data([1]), name: "A.txt")
+        let b = try await store.importData(Data([2]), name: "B.txt", folder: folder)
+        let newA = try await store.importData(Data([3]), name: "A.txt", versionOf: a)
+        let newB = try await store.importData(Data([4]), name: "B.txt", versionOf: b)
+        try await store.moveDocument(newA, to: folder)
+        try await store.moveDocument(newB, to: "")
+        try await store.deleteFolder(folder)
+        let library = try await store.library()
+        XCTAssertEqual(library.documents.map(\.id), [newB])
+        XCTAssertTrue(library.folders.isEmpty)
+        XCTAssertTrue(library.versions(of: a).isEmpty)
+        XCTAssertEqual(library.versions(of: b).map(\.id), [newB, b])
+    }
+
     func testThumbnailFromEncryptedPhotoIsDownsampledAndRequiresOpenVault() async throws {
         let store = try VaultStore(root: location("vignettes"), keys: VaultKeys(), create: true)
         let context = try XCTUnwrap(CGContext(data: nil, width: 960, height: 480, bitsPerComponent: 8,
