@@ -23,6 +23,12 @@ final class IncomingShareTests: VaultTestCase {
             completion(source, false, nil)
             return nil
         }
+        do {
+            _ = try await writer.receive(provider, checking: { throw CancellationError() })
+            XCTFail("Une lecture annulée doit interrompre le partage.")
+        } catch is CancellationError {}
+        XCTAssertTrue(try inbox.pending().isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: writer.staging.path).isEmpty)
         let first = try await writer.receive(provider)
         let second = try writer.store(name: "Vide.txt") { Data() }
         XCTAssertTrue(try inbox.pending().isEmpty)

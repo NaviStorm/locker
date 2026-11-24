@@ -2,7 +2,7 @@ import Foundation
 import UniformTypeIdentifiers
 
 extension ShareInbox.Writer {
-    func receive(_ provider: NSItemProvider) async throws -> ShareInbox.Item {
+    func receive(_ provider: NSItemProvider, checking: @escaping @Sendable () throws -> Void = {}) async throws -> ShareInbox.Item {
         let types = provider.registeredTypeIdentifiers.compactMap { UTType($0) }
         if types.contains(.fileURL) {
             return try await withCheckedThrowingContinuation { continuation in
@@ -10,7 +10,7 @@ extension ShareInbox.Writer {
                     do {
                         let url = (item as? URL) ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
                         guard let url, url.isFileURL else { throw error ?? ShareIssue.invalid }
-                        continuation.resume(returning: try receiveFile(url, name: url.lastPathComponent))
+                        continuation.resume(returning: try receiveFile(url, name: url.lastPathComponent, checking: checking))
                     } catch { continuation.resume(throwing: error) }
                 }
             }
@@ -26,14 +26,14 @@ extension ShareInbox.Writer {
                             name += "." + ext
                         }
                         // The provider owns this URL only for the duration of its callback.
-                        continuation.resume(returning: try receiveFile(url, name: name))
+                        continuation.resume(returning: try receiveFile(url, name: name, checking: checking))
                     } catch { continuation.resume(throwing: error) }
                 }
             }
         }
         if types.contains(where: { $0.conforms(to: .url) }),
            let url = try await loadItem(provider, type: .url) as? URL {
-            if url.isFileURL { return try receiveFile(url, name: url.lastPathComponent) }
+            if url.isFileURL { return try receiveFile(url, name: url.lastPathComponent, checking: checking) }
             var bytes = Data(url.absoluteString.utf8)
             return try store(name: "Lien.txt") { defer { bytes.removeAll() }; return bytes }
         }
@@ -49,14 +49,15 @@ extension ShareInbox.Writer {
         }
     }
 
-    private func receiveFile(_ url: URL, name: String) throws -> ShareInbox.Item {
+    private func receiveFile(_ url: URL, name: String, checking: () throws -> Void) throws -> ShareInbox.Item {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         let basename = (name as NSString).lastPathComponent
         return try store(name: basename.isEmpty ? "Document" : basename) {
-            try file.read(upToCount: ShareInbox.chunkSize) ?? Data()
+            try checking()
+            return try file.read(upToCount: ShareInbox.chunkSize) ?? Data()
         }
     }
 }
