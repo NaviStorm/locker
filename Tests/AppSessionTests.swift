@@ -202,6 +202,53 @@ final class AppSessionTests: VaultTestCase {
         XCTFail("Les deux commandes doivent être accessibles sans ouvrir de menu.")
     }
 
+    @MainActor func testThumbnailGridAllowsMarkingTwoDocuments() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("grille"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        for name in ["Premier.txt", "Second.txt"] { _ = try await store.importData(Data([1]), name: name) }
+        model.store = store
+        model.library = try await store.library()
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(true, forKey: "libraryShowsThumbnails")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let host = UIHostingController(rootView: LibraryScreen(model: model).defaultAppStorage(defaults))
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+
+        func button(_ label: String) async throws -> NSObject {
+            for _ in 0..<20 {
+                try await Task.sleep(for: .milliseconds(50))
+                var visited = Set<ObjectIdentifier>()
+                func find(_ node: NSObject) -> NSObject? {
+                    guard visited.insert(ObjectIdentifier(node)).inserted else { return nil }
+                    if node.accessibilityLabel?.contains(label) == true && node.accessibilityTraits.contains(.button) {
+                        return node
+                    }
+                    let count = node.accessibilityElementCount()
+                    var children = (node.accessibilityElements ?? []).compactMap { $0 as? NSObject }
+                    if count > 0 && count != NSNotFound {
+                        children += (0..<count).compactMap { node.accessibilityElement(at: $0) as? NSObject }
+                    }
+                    children += (node as? UIView)?.subviews ?? []
+                    for child in children { if let match = find(child) { return match } }
+                    return nil
+                }
+                if let match = find(host.view) { return match }
+            }
+            throw TransportError(message: "Bouton absent : " + label)
+        }
+
+        for label in ["Sélectionner", "Premier.txt", "Second.txt"] {
+            let control = try await button(label)
+            XCTAssertTrue(control.accessibilityActivate(), label)
+        }
+        _ = try await button("Déplacer (2)")
+    }
+
     @MainActor func testImportScreenOffersDecompressionBeforeChoosingAFile() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)

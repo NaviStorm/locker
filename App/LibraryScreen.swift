@@ -9,6 +9,10 @@ struct LibraryScreen: View {
     @State private var folderName = ""
     @State private var category = ""
     @State private var selection: UUID?
+    @AppStorage("libraryShowsThumbnails") private var showsThumbnails = false
+    @State private var selectingDocuments = false
+    @State private var marked = Set<UUID>()
+    @State private var moving = false
     #if os(macOS)
     @State private var showSidebar = true
     #endif
@@ -40,8 +44,8 @@ struct LibraryScreen: View {
         query.isEmpty && category.isEmpty && !subfolders.isEmpty
     }
 
-    private func documentList(compact: Bool = false) -> some View {
-        List(selection: compact ? nil : $selection) {
+    private func listContents(compact: Bool) -> some View {
+        List(selection: compact || selectingDocuments ? nil : $selection) {
             if showsFolders {
                 Section("Dossiers") {
                     ForEach(subfolders, id: \.self) { name in
@@ -65,8 +69,12 @@ struct LibraryScreen: View {
             if !filtered.isEmpty {
                 Section("Documents") {
                     ForEach(filtered) { item in
-                        documentLink(item, compact: compact)
-                        .contextMenu { documentActions(for: item) }
+                        if selectingDocuments {
+                            markButton(item) { documentRow(item) }
+                        } else {
+                            documentLink(item, compact: compact)
+                                .contextMenu { documentActions(for: item) }
+                        }
                     }
                 }
             }
@@ -78,6 +86,13 @@ struct LibraryScreen: View {
         #else
         .listStyle(.inset)
         #endif
+    }
+
+    private func documentList(compact: Bool = false) -> some View {
+        Group {
+            if showsThumbnails { gridContents }
+            else { listContents(compact: compact) }
+        }
         .overlay {
             if filtered.isEmpty && !showsFolders {
                 let searching = !query.isEmpty || !category.isEmpty
@@ -93,9 +108,25 @@ struct LibraryScreen: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { collectionControls }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selectingDocuments {
+                Menu {
+                    Button("Racine du coffre") { moveMarked(to: "") }.disabled(folder.isEmpty)
+                    ForEach(model.library.folders, id: \.self) { target in
+                        Button(target) { moveMarked(to: target) }.disabled(target == folder)
+                    }
+                } label: {
+                    Label("Déplacer (\(marked.count))", systemImage: "folder")
+                }
+                .disabled(marked.isEmpty || moving)
+                .padding(8).frame(maxWidth: .infinity).background(.bar)
+            }
+        }
+        .onChange(of: filtered.map(\.id)) { _, ids in marked.formIntersection(ids) }
         .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
         .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
-        .onChange(of: folder) { category = ""; query = "" }
+        .onChange(of: folder) { category = ""; query = ""; marked.removeAll(); selectingDocuments = false }
         .onChange(of: selectedDocument?.id) { _, id in
             if id == nil { selection = nil }
         }
@@ -123,6 +154,99 @@ struct LibraryScreen: View {
             }
         }
         #endif
+    }
+
+    private var collectionControls: some View {
+        HStack {
+            Picker("Affichage", selection: $showsThumbnails) {
+                Label("Liste", systemImage: "list.bullet").tag(false)
+                Label("Vignettes", systemImage: "square.grid.2x2").tag(true)
+            }
+            .pickerStyle(.segmented).labelStyle(.iconOnly).labelsHidden()
+            .frame(width: 92)
+            Spacer()
+            Button(selectingDocuments ? "Annuler" : "Sélectionner") {
+                selection = nil
+                marked.removeAll()
+                selectingDocuments.toggle()
+            }.disabled(moving || (!selectingDocuments && filtered.isEmpty))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6).background(.bar)
+    }
+
+    private var gridContents: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 115, maximum: 180), spacing: 14)],
+                      alignment: .leading, spacing: 16) {
+                if showsFolders {
+                    ForEach(subfolders, id: \.self) { name in
+                        Button { folder = name } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Image(systemName: "folder.fill").font(.largeTitle).foregroundStyle(Color.lockerTint)
+                                    .frame(maxWidth: .infinity).frame(height: 90)
+                                    .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                                Text(name.components(separatedBy: "/").last ?? name)
+                                    .font(.callout.weight(.medium)).lineLimit(2)
+                            }
+                        }.contextMenu { folderActions(name) }
+                    }
+                }
+                ForEach(filtered) { item in
+                    let tile = DocumentTile(item: item, store: model.store)
+                    if selectingDocuments {
+                        markButton(item) { tile }
+                    } else {
+                        NavigationLink(value: item.id) { tile }
+                            .contextMenu { documentActions(for: item) }
+                    }
+                }
+            }.buttonStyle(.plain).padding(14)
+        }.background(Color.lockerCanvas)
+    }
+
+    private func markButton<Content: View>(_ item: ListedDocument, @ViewBuilder content: () -> Content) -> some View {
+        Button {
+            if !marked.insert(item.id).inserted { marked.remove(item.id) }
+        } label: {
+            if showsThumbnails {
+                content().overlay(alignment: .topTrailing) { selectionMark(item).padding(5) }
+            } else {
+                HStack { selectionMark(item); content(); Spacer(minLength: 0) }.contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(marked.contains(item.id) ? .isSelected : [])
+        .disabled(moving)
+    }
+
+    private func selectionMark(_ item: ListedDocument) -> some View {
+        Image(systemName: marked.contains(item.id) ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(Color.lockerTint).background(.background, in: Circle())
+            .accessibilityHidden(true)
+    }
+
+    private func moveMarked(to destination: String) {
+        guard !moving, !marked.isEmpty, model.store != nil else { return }
+        let ids = marked
+        moving = true
+        model.perform { store in
+            defer { moving = false }
+            try await store.moveDocuments(ids, to: destination)
+            marked.removeAll()
+            selectingDocuments = false
+        }
+    }
+
+    private var stackedBrowser: some View {
+        NavigationStack(path: Binding(get: { selection.map { [$0] } ?? [] },
+                                      set: { selection = $0.last })) {
+            documentList(compact: true)
+                .navigationDestination(for: UUID.self) { id in
+                    if let item = model.documents.first(where: { $0.id == id }) {
+                        documentView(item)
+                    }
+                }
+        }
     }
 
     @ViewBuilder private func documentLink(_ item: ListedDocument, compact: Bool) -> some View {
@@ -329,21 +453,12 @@ struct LibraryScreen: View {
             .background(.bar)
             Divider()
             GeometryReader { geometry in
-                if geometry.size.width < 680 {
-                    NavigationStack(path: Binding(get: { selection.map { [$0] } ?? [] },
-                                                  set: { selection = $0.last })) {
-                        documentList(compact: true)
-                            .navigationDestination(for: UUID.self) { id in
-                                if let item = model.documents.first(where: { $0.id == id }) {
-                                    documentView(item)
-                                }
-                            }
-                    }
-                } else { browser }
+                if showsThumbnails || geometry.size.width < 680 { stackedBrowser }
+                else { browser }
             }
         }
         #else
-        browser
+        if showsThumbnails { stackedBrowser } else { browser }
         #endif
     }
 

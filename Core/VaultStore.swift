@@ -356,13 +356,30 @@ actor VaultStore {
     }
 
     func moveDocument(_ id: UUID, to folder: String) throws {
-        var labels = try labelsForDocument(id)
-        guard folder != labels.folder else { return }
+        try moveDocuments([id], to: folder)
+    }
+
+    func moveDocuments(_ ids: Set<UUID>, to folder: String) throws {
+        try gate.check()
         if !folder.isEmpty, try !library().folders.contains(folder) {
             throw TransportError(message: "Ce dossier n’existe plus dans le coffre.")
         }
-        labels.folder = folder
-        try change(id, labels: labels)
+        var updated = entries
+        var queue = pending
+        var changed = false
+        for id in ids {
+            guard let entry = entries[id], let document = entry.document, document.isFolder != true else {
+                throw VaultError.unavailable
+            }
+            guard document.labels.folder != folder else { continue }
+            var labels = document.labels
+            labels.folder = folder
+            let next = try changedEntry(entry, labels: labels)
+            updated[id] = next
+            queue[id] = next.revision
+            changed = true
+        }
+        if changed { try commit(updated, queue) }
     }
 
     func change(_ id: UUID, labels: Labels?) throws {
