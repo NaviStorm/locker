@@ -52,10 +52,10 @@ extension VaultStore {
         return (source, ranges, CGImageSourceGetPrimaryImageIndex(source))
     }
 
-    func photoEditingPreview(_ id: UUID) throws -> CGImage {
+    func photoEditingPreview(_ id: UUID, maxPixelSize: Int = 1280) throws -> CGImage {
         let (source, ranges, index) = try photoSource(id)
         let options: [CFString: Any] = [
-            kCGImageSourceThumbnailMaxPixelSize: 1280,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true
         ]

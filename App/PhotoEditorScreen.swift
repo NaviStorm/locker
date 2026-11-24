@@ -19,14 +19,12 @@ struct PhotoEditorScreen: View {
         NavigationStack {
             VStack(spacing: 12) {
                 if let preview {
-                    Color.clear
-                        .aspectRatio(CGFloat(preview.width) / CGFloat(preview.height), contentMode: .fit)
-                        .overlay {
-                            Image(decorative: preview, scale: 1).resizable()
-                            if cropping { CropFrame(rect: $crop) }
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ZoomablePhoto(image: Image(decorative: preview, scale: 1),
+                                  size: CGSize(width: preview.width, height: preview.height)) {
+                        if cropping { CropFrame(rect: $crop) }
+                    }
+                    .id(ObjectIdentifier(preview))
+                    .padding(16)
                 } else if problem == nil { ProgressView().frame(maxHeight: .infinity) }
                 if let problem { Text(problem).foregroundStyle(.red).padding(.horizontal) }
                 if saving { ProgressView("Enregistrement…") }

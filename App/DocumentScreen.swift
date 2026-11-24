@@ -24,7 +24,10 @@ struct DocumentScreen<Actions: View>: View {
     var body: some View {
         VStack(spacing: 12) {
             if let pdf { LargePDFScreen(pdf: pdf) }
-            else if let largePhoto { Image(decorative: largePhoto, scale: 1).resizable().scaledToFit() }
+            else if let largePhoto {
+                ZoomablePhoto(image: Image(decorative: largePhoto, scale: 1),
+                              size: CGSize(width: largePhoto.width, height: largePhoto.height))
+            }
             else if let bytes {
                 DocumentPreview(data: bytes, name: item.labels.name)
             } else if notice.isEmpty { ProgressView() }
@@ -85,7 +88,7 @@ struct DocumentScreen<Actions: View>: View {
                     return
                 }
                 if item.size > 32 * 1024 * 1024, isPhoto {
-                    let preview = try await store.photoEditingPreview(item.id)
+                    let preview = try await store.photoEditingPreview(item.id, maxPixelSize: 4096)
                     try store.gate.check()
                     largePhoto = preview
                     return
@@ -185,10 +188,10 @@ private struct DocumentPreview: View {
         if type?.conforms(to: .pdf) == true { NativePDF(data: data) }
         else if type?.conforms(to: .image) == true {
             #if os(iOS)
-            if let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit() }
+            if let image = UIImage(data: data) { ZoomablePhoto(image: Image(uiImage: image), size: image.size) }
             else { Text("Image illisible.") }
             #else
-            if let image = NSImage(data: data) { Image(nsImage: image).resizable().scaledToFit() }
+            if let image = NSImage(data: data) { ZoomablePhoto(image: Image(nsImage: image), size: image.size) }
             else { Text("Image illisible.") }
             #endif
         } else if type?.conforms(to: .text) == true, let value = String(data: data, encoding: .utf8) {
