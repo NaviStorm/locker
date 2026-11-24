@@ -64,6 +64,64 @@ final class FamilyTests: VaultTestCase {
         catch FamilyError.stale {}
     }
 
+    func testJoinDraftGuidancePersistenceAndAcceptance() async throws {
+        let owner = try DeviceIdentity(hardware: false)
+        let reader = try DeviceIdentity(hardware: false)
+        let host = try VaultStore(root: location("host"), keys: VaultKeys(), create: true)
+        try await host.createFamily(using: owner)
+        try await host.changeMembership(card: reader.card, role: .reader, scope: nil, using: owner)
+        let family = await host.family
+        let ticket = try FamilyInvitation.make(state: XCTUnwrap(family), for: reader.card, by: owner)
+        let root = location("recipient")
+        let keys = VaultKeys()
+        let store = try VaultStore(root: root, keys: keys, create: true)
+
+        var draft = FamilyJoinDraft()
+        XCTAssertNotNil(draft.nextStep)
+        draft.ticket = "  \n"
+        XCTAssertNotNil(draft.nextStep)
+        draft.ticket = ticket
+        XCTAssertNotNil(draft.nextStep)
+        draft.card = "carte incomplète"
+        draft.fingerprintConfirmed = true
+        XCTAssertFalse(draft.fingerprintConfirmed)
+        draft.card = owner.card.card
+        XCTAssertNotNil(draft.nextStep)
+        draft.fingerprintConfirmed = true
+        XCTAssertNil(draft.nextStep)
+        draft.ticket = "Invitation chiffrée"
+        XCTAssertNotNil(draft.nextStep)
+        draft.ticket = ticket
+        try await store.saveFamilyJoinDraft(draft)
+        let pending = await store.pending
+        XCTAssertTrue(pending.isEmpty)
+        let bytes = try Data(contentsOf: root.appendingPathComponent("catalog.v1"))
+        XCTAssertNil(bytes.range(of: Data(ticket.utf8)))
+        XCTAssertNil(bytes.range(of: Data(draft.card.utf8)))
+        store.gate.revoke()
+        do { _ = try await store.familyJoinDraft(); XCTFail("Lecture après verrouillage") } catch VaultError.locked {}
+
+        let reopened = try VaultStore(root: root, keys: keys)
+        let restored = try await reopened.familyJoinDraft()
+        XCTAssertEqual(restored, draft)
+        var changed = restored
+        changed.card = reader.card.card
+        XCTAssertFalse(changed.fingerprintConfirmed)
+        XCTAssertNotNil(changed.nextStep)
+        do {
+            try await reopened.joinFamily(ticket, from: reader.card, using: reader)
+            XCTFail("Invitation acceptée avec une autre carte")
+        } catch {}
+        let afterFailure = try await reopened.familyJoinDraft()
+        XCTAssertEqual(afterFailure, draft)
+        try await reopened.joinFamily(restored.ticket, from: XCTUnwrap(restored.owner), using: reader)
+        let joined = try VaultStore(root: root, keys: keys)
+        let remaining = try await joined.familyJoinDraft()
+        let principal = await joined.family?.principal
+        XCTAssertEqual(remaining, FamilyJoinDraft())
+        XCTAssertEqual(principal, reader.card.fingerprint)
+    }
+
     func testWrongRecipientAndForgedAdminCannotIssuePolicy() throws {
         let admin = try DeviceIdentity(hardware: false)
         let visitor = try DeviceIdentity(hardware: false)

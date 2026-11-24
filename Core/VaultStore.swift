@@ -70,6 +70,7 @@ struct Catalog: Codable {
     var entries: [UUID: Entry]
     var pending: [UUID: UUID]
     var family: FamilyLocal?
+    var joinDraft: FamilyJoinDraft?
 }
 
 actor VaultStore {
@@ -79,6 +80,7 @@ actor VaultStore {
     private(set) var entries: [UUID: Entry]
     private(set) var pending: [UUID: UUID]
     private(set) var family: FamilyLocal?
+    private var joinDraft: FamilyJoinDraft?
 
     init(root: URL, keys: VaultKeys, create: Bool = false, gate: SessionGate = SessionGate()) throws {
         self.root = root
@@ -99,6 +101,7 @@ actor VaultStore {
         entries = state.entries
         pending = state.pending
         family = state.family
+        joinDraft = state.joinDraft
         // A crash can leave encrypted content without a committed catalogue reference.
         for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             where file.pathExtension == "blob" {
@@ -138,12 +141,31 @@ actor VaultStore {
     }
 
     func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID], family newFamily: FamilyLocal? = nil) throws {
-        let data = try Self.pack(Catalog(entries: updated, pending: queue, family: newFamily ?? family), keys: keys, purpose: "catalog")
+        let nextFamily = newFamily ?? family
+        try writeCatalog(Catalog(entries: updated, pending: queue, family: nextFamily,
+                                 joinDraft: nextFamily == nil ? joinDraft : nil))
+    }
+
+    func familyJoinDraft() throws -> FamilyJoinDraft {
+        try gate.check()
+        return joinDraft ?? FamilyJoinDraft()
+    }
+
+    func saveFamilyJoinDraft(_ draft: FamilyJoinDraft) throws {
+        try gate.check()
+        guard family == nil else { throw FamilyError.nonempty }
+        try writeCatalog(Catalog(entries: entries, pending: pending, family: nil,
+                                 joinDraft: draft == FamilyJoinDraft() ? nil : draft))
+    }
+
+    private func writeCatalog(_ catalog: Catalog) throws {
+        let data = try Self.pack(catalog, keys: keys, purpose: "catalog")
         try gate.authorized {
             try VaultFiles.save(data, to: root.appendingPathComponent("catalog.v1"))
-            family = newFamily ?? family
-            entries = updated
-            pending = queue
+            family = catalog.family
+            entries = catalog.entries
+            pending = catalog.pending
+            joinDraft = catalog.joinDraft
         }
     }
 

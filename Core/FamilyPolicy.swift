@@ -91,6 +91,30 @@ struct FamilyLocal: Codable {
     var bootstrap: Bool?
 }
 
+struct FamilyJoinDraft: Codable, Equatable {
+    var ticket = ""
+    var card = "" {
+        didSet { if card != oldValue { verifiedFingerprint = nil } }
+    }
+    private(set) var verifiedFingerprint: String?
+    var owner: PublicIdentity? { try? PublicIdentity(card: card) }
+
+    var fingerprintConfirmed: Bool {
+        get { verifiedFingerprint != nil && verifiedFingerprint == owner?.fingerprint }
+        set { verifiedFingerprint = newValue ? owner?.fingerprint : nil }
+    }
+
+    var nextStep: String? {
+        let text = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return "Collez l’invitation envoyée par le propriétaire avec « Transmettre l’invitation chiffrée »." }
+        guard let bytes = Data(base64Encoded: text), (try? JSONDecoder().decode(SignedObject.self, from: bytes)) != nil
+        else { return "L’invitation est illisible. Recopiez le texte complet de l’invitation chiffrée." }
+        if card.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Collez aussi la carte publique du propriétaire." }
+        guard owner != nil else { return "La carte publique est illisible. Demandez au propriétaire de vous renvoyer sa carte." }
+        return fingerprintConfirmed ? nil : "Comparez l’empreinte avec le propriétaire, de vive voix, puis cochez la confirmation."
+    }
+}
+
 struct FamilyInvitation: Codable {
     let tip: PolicyCertificate
     let cloudURL: URL?
