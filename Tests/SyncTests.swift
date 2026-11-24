@@ -170,6 +170,25 @@ final class SyncTests: VaultTestCase {
         XCTAssertTrue(library.documents(in: factures).isEmpty)
     }
 
+    func testNestedFolderNavigationAndImplicitParents() async throws {
+        let store = try VaultStore(root: location("arbre"), keys: VaultKeys(), create: true)
+        let first = try await store.createFolder("Famille")
+        let second = try await store.createFolder("Impôts", in: first)
+        _ = try await store.createFolder("2026", in: second)
+        _ = try await store.createFolder("2026", in: first)
+        _ = try await store.importData(Data([1]), name: "Photo.jpg", folder: "Voyages/Italie/Rome")
+        let library = try await store.library()
+        XCTAssertEqual(library.subfolders(in: ""), ["Famille", "Voyages"])
+        XCTAssertEqual(Set(library.subfolders(in: first)), ["Famille/2026", "Famille/Impôts"])
+        XCTAssertEqual(library.subfolders(in: second), ["Famille/Impôts/2026"])
+        XCTAssertEqual(library.subfolders(in: "Voyages"), ["Voyages/Italie"])
+        XCTAssertTrue(library.documents(in: "Voyages").isEmpty)
+        for (name, parent) in [("impôts", first), ("Invalide/test", first), ("Essai", "Inconnu")] {
+            do { _ = try await store.createFolder(name, in: parent); XCTFail("Création inattendue") }
+            catch is TransportError {}
+        }
+    }
+
     func testFolderTreeRenameDeleteAndSync() async throws {
         let keys = VaultKeys()
         let root = location("local")
@@ -177,7 +196,7 @@ final class SyncTests: VaultTestCase {
         let other = try VaultStore(root: location("autre"), keys: keys, create: true)
         let replica = MemoryReplica(root: location("."))
         _ = try await store.createFolder("Contrats")
-        _ = try await store.createFolder("Contrats/Vides")
+        _ = try await store.createFolder("Vides", in: "Contrats")
         let doc = try await store.importData(Data([3]), name: "note.txt", folder: "Contrats/Archives")
         let sibling = try await store.importData(Data([4]), name: "ancienne.txt", folder: "Contrats 2020")
         try await store.synchronize(with: replica)

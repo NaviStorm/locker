@@ -61,6 +61,14 @@ struct VaultLibrary {
     var documents: [ListedDocument] = []
     var folders: [String] = []
 
+    static func parent(of path: String) -> String {
+        path.lastIndex(of: "/").map { String(path[..<$0]) } ?? ""
+    }
+
+    func subfolders(in parent: String) -> [String] {
+        folders.filter { Self.parent(of: $0) == parent }
+    }
+
     func documents(in folder: String) -> [ListedDocument] {
         documents.filter { $0.labels.folder == folder }
     }
@@ -204,18 +212,32 @@ actor VaultStore {
                                                 labels: document.labels, size: document.size))
             }
         }
+        // An imported archive or a shared document can contain a path without parent markers.
+        for path in folders {
+            var parent = VaultLibrary.parent(of: path)
+            while !parent.isEmpty && folders.insert(parent).inserted {
+                parent = VaultLibrary.parent(of: parent)
+            }
+        }
         return VaultLibrary(documents: documents.sorted { $0.labels.name.localizedStandardCompare($1.labels.name) == .orderedAscending },
                             folders: folders.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
     }
 
-    func createFolder(_ proposed: String) throws -> String {
+    func createFolder(_ proposed: String, in parent: String = "") throws -> String {
         let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { throw TransportError(message: "Saisissez un nom de dossier.") }
-        guard try !library().folders.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            throw TransportError(message: "Saisissez un nom de dossier valide.")
+        }
+        let folders = try library().folders
+        guard parent.isEmpty || folders.contains(parent) else {
+            throw TransportError(message: "Le dossier parent n’existe plus dans le coffre.")
+        }
+        let path = parent.isEmpty ? name : parent + "/" + name
+        guard !folders.contains(where: { $0.caseInsensitiveCompare(path) == .orderedSame }) else {
             throw TransportError(message: "Un dossier porte déjà ce nom.")
         }
-        _ = try add(name: name, isFolder: true) { Data() }
-        return name
+        _ = try add(name: path, isFolder: true) { Data() }
+        return path
     }
 
     func renameFolder(_ folder: String, to proposed: String) throws -> String {

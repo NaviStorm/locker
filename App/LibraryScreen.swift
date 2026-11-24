@@ -35,20 +35,21 @@ struct LibraryScreen: View {
                     .contains { $0.localizedStandardContains(query) })
         }
     }
+    private var subfolders: [String] { model.library.subfolders(in: folder) }
     private var showsFolders: Bool {
-        folder.isEmpty && query.isEmpty && category.isEmpty && !model.library.folders.isEmpty
+        query.isEmpty && category.isEmpty && !subfolders.isEmpty
     }
 
     private func documentList(compact: Bool = false) -> some View {
         List(selection: compact ? nil : $selection) {
             if showsFolders {
                 Section("Dossiers") {
-                    ForEach(model.library.folders, id: \.self) { name in
+                    ForEach(subfolders, id: \.self) { name in
                         HStack(spacing: 8) {
                             Button { folder = name } label: {
                                 HStack(spacing: 12) {
                                     VaultGlyph(symbol: "folder.fill")
-                                    Text(name).font(.body.weight(.medium))
+                                    Text(name.components(separatedBy: "/").last ?? name).font(.body.weight(.medium))
                                     Spacer(minLength: 4)
                                 }.contentShape(Rectangle())
                             }.buttonStyle(.plain)
@@ -100,7 +101,10 @@ struct LibraryScreen: View {
         }
         #if os(iOS)
         .toolbar {
-            ToolbarItem(placement: folder.isEmpty ? .navigation : .automatic) { folderButton }
+            ToolbarItemGroup(placement: .navigation) {
+                if !folder.isEmpty { parentButton }
+                folderButton
+            }
             ToolbarItemGroup {
                 Menu {
                     importButton
@@ -180,7 +184,7 @@ struct LibraryScreen: View {
             VaultOverview(title: folder.isEmpty ? model.vaultTitle : folder,
                           provider: model.configuration.provider.rawValue,
                           documents: filtered,
-                          folderCount: folder.isEmpty ? model.library.folders.count : nil,
+                          folderCount: folder.isEmpty ? subfolders.count : nil,
                           open: selectVersion)
         }
     }
@@ -219,8 +223,9 @@ struct LibraryScreen: View {
             TextField("Nom du dossier", text: $folderName)
             Button("Créer") {
                 let name = folderName
+                let parent = folder
                 model.perform { store in
-                    folder = try await store.createFolder(name)
+                    folder = try await store.createFolder(name, in: parent)
                     category = ""
                     query = ""
                 }
@@ -245,7 +250,7 @@ struct LibraryScreen: View {
             Button("Supprimer le dossier et son contenu", role: .destructive) {
                 model.perform { store in
                     try await store.deleteFolder(name)
-                    if folder == name || folder.hasPrefix(name + "/") { folder = ""; selection = nil }
+                    if folder == name || folder.hasPrefix(name + "/") { folder = VaultLibrary.parent(of: name); selection = nil }
                 }
             }
             Button("Annuler", role: .cancel) {}
@@ -298,6 +303,7 @@ struct LibraryScreen: View {
         #if os(macOS)
         VStack(spacing: 0) {
             HStack(spacing: 12) {
+                if !folder.isEmpty { parentButton }
                 folderButton
                 importButton
                 Button("Photographier un document", systemImage: "camera") { scanner = true }
@@ -341,18 +347,21 @@ struct LibraryScreen: View {
         #endif
     }
 
-    @ViewBuilder private var folderButton: some View {
-        if folder.isEmpty {
-            Button("Nouveau dossier", systemImage: "folder.badge.plus") {
-                folderName = ""
-                creatingFolder = true
-            }
-            .labelStyle(.iconOnly)
-            .help("Nouveau dossier")
-        } else {
-            Button("Retour au coffre", systemImage: "chevron.backward") { folder = "" }
-                .help("Retour au coffre")
+    private var folderButton: some View {
+        Button("Nouveau dossier", systemImage: "folder.badge.plus") {
+            folderName = ""
+            creatingFolder = true
         }
+        .labelStyle(.iconOnly)
+        .help("Nouveau dossier")
+    }
+
+    private var parentButton: some View {
+        Button("Remonter d’un dossier", systemImage: "chevron.backward") {
+            folder = VaultLibrary.parent(of: folder)
+        }
+        .labelStyle(.iconOnly)
+        .help("Remonter d’un dossier")
     }
 
     @ViewBuilder private func folderActions(_ name: String) -> some View {
