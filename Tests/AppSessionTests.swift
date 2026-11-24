@@ -9,13 +9,60 @@ import SwiftUI
 
 final class AppSessionTests: VaultTestCase {
     #if targetEnvironment(simulator)
+    func testPasscodeAndBiometricsRequestOnlyTheSelectedSystemMethod() async throws {
+        final class RecordingContext: LAContext {
+            var policies: [LAPolicy] = []
+            var controls: [SecAccessControl] = []
+            var allow = true
+
+            override func evaluatePolicy(_ policy: LAPolicy, localizedReason: String) async throws -> Bool {
+                policies.append(policy)
+                return allow
+            }
+
+            override func evaluateAccessControl(_ accessControl: SecAccessControl, operation: LAAccessControlOperation,
+                                                localizedReason: String) async throws -> Bool {
+                XCTAssertEqual(operation, .useItem)
+                controls.append(accessControl)
+                return allow
+            }
+        }
+        let code = RecordingContext()
+        try await VaultAuthenticationMethod.passcode.confirm(using: code, reason: "Test")
+        let expected = try XCTUnwrap(SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                                                                    .devicePasscode, nil))
+        XCTAssertEqual(code.controls.count, 1)
+        XCTAssertTrue(CFEqual(try XCTUnwrap(code.controls.first), expected))
+        XCTAssertTrue(code.policies.isEmpty)
+        XCTAssertTrue(code.interactionNotAllowed)
+
+        let bio = RecordingContext()
+        try await VaultAuthenticationMethod.biometrics.confirm(using: bio, reason: "Test")
+        XCTAssertEqual(bio.policies, [.deviceOwnerAuthenticationWithBiometrics])
+        XCTAssertTrue(bio.controls.isEmpty)
+
+        let denied = RecordingContext()
+        denied.allow = false
+        do {
+            try await VaultAuthenticationMethod.passcode.confirm(using: denied, reason: "Test")
+            XCTFail("Un code refusé doit laisser le coffre fermé.")
+        } catch VaultError.locked {}
+        XCTAssertTrue(denied.policies.isEmpty)
+    }
+
     func testDeviceOnlyVaultUsesItsOwnKeychainProtection() async throws {
         guard ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
             throw XCTSkip("Ce test utilise le Trousseau du simulateur iPhone Duo.")
         }
         final class ConfirmedContext: LAContext {
             override func evaluatePolicy(_ policy: LAPolicy, localizedReason: String) async throws -> Bool {
-                XCTAssertEqual(policy, .deviceOwnerAuthentication)
+                XCTAssertEqual(policy, .deviceOwnerAuthenticationWithBiometrics)
+                return true
+            }
+
+            override func evaluateAccessControl(_ accessControl: SecAccessControl, operation: LAAccessControlOperation,
+                                                localizedReason: String) async throws -> Bool {
+                XCTAssertEqual(operation, .useItem)
                 return true
             }
         }
@@ -29,27 +76,32 @@ final class AppSessionTests: VaultTestCase {
             return context
         }
         let opened = try await LockerModel.authenticateAndOpen(.create, at: root, context: silentContext(),
-                                                               gate: SessionGate(), protectNewKey: false)
+                                                               gate: SessionGate(), protectNewKey: false, method: .biometrics)
         let document = try await opened.importData(Data([42]), name: "Exemple")
         opened.gate.revoke()
         XCTAssertFalse(device.requiresAuthentication())
         let reopened = try await LockerModel.authenticateAndOpen(.unlock, at: root, context: silentContext(),
-                                                                 gate: SessionGate(), protectNewKey: true)
+                                                                 gate: SessionGate(), protectNewKey: true, method: .biometrics)
         let contents = try await reopened.preview(document)
         XCTAssertEqual(contents, Data([42]))
         XCTAssertTrue(DeviceKeychain(account: UUID().uuidString).requiresAuthentication())
         do {
-            try await device.changeProtection(required: true, context: silentContext(), gate: reopened.gate)
+            try await device.changeProtection(required: true, method: .biometrics, context: silentContext(), gate: reopened.gate)
             XCTFail("La modification doit demander confirmation")
         } catch {}
         XCTAssertFalse(device.requiresAuthentication())
         do {
-            try await device.changeProtection(required: true, context: ConfirmedContext(), gate: opened.gate)
+            try await device.changeProtection(required: true, method: .biometrics, context: ConfirmedContext(), gate: opened.gate)
             XCTFail("Un coffre fermé doit refuser le changement de protection")
         } catch VaultError.locked {}
         XCTAssertFalse(device.requiresAuthentication())
-        try await device.changeProtection(required: true, context: ConfirmedContext(), gate: reopened.gate)
+        try await device.changeProtection(required: true, method: .biometrics, context: ConfirmedContext(), gate: reopened.gate)
         XCTAssertTrue(device.requiresAuthentication())
+        let byCode = try await LockerModel.authenticateAndOpen(.unlock, at: root, context: ConfirmedContext(),
+                                                               gate: SessionGate(), protectNewKey: true, method: .passcode)
+        let codeContents = try await byCode.preview(document)
+        XCTAssertEqual(codeContents, contents)
+        byCode.gate.revoke()
         var lookup = device.query
         lookup[kSecReturnAttributes as String] = true
         var result: CFTypeRef?
@@ -58,12 +110,12 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(attributes[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly as String)
         do {
             _ = try await LockerModel.authenticateAndOpen(.unlock, at: root, context: silentContext(),
-                                                          gate: SessionGate(), protectNewKey: false)
+                                                          gate: SessionGate(), protectNewKey: false, method: .biometrics)
             XCTFail("L’ouverture protégée exige une authentification, même si la création propose un autre choix.")
         } catch {}
-        try await device.changeProtection(required: false, context: ConfirmedContext(), gate: reopened.gate)
+        try await device.changeProtection(required: false, method: .biometrics, context: ConfirmedContext(), gate: reopened.gate)
         let restored = try await LockerModel.authenticateAndOpen(.unlock, at: root, context: silentContext(),
-                                                                 gate: SessionGate(), protectNewKey: true)
+                                                                 gate: SessionGate(), protectNewKey: true, method: .biometrics)
         let afterChange = try await restored.preview(document)
         XCTAssertEqual(afterChange, contents)
     }
@@ -148,7 +200,7 @@ final class AppSessionTests: VaultTestCase {
         _ = try VaultStore(root: otherRoot, keys: keys, create: true)
         var deny = true
         var newProtection: Bool?
-        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey in
+        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey, _ in
             if deny { throw VaultError.locked }
             switch mode {
             case .unlock: return try VaultStore(root: root, keys: keys, gate: gate)

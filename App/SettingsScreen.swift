@@ -57,8 +57,13 @@ struct SettingsScreen: View {
                         }
                     ))
                     .disabled(model.changingProtection)
+                    AuthenticationMethodPicker(selection: Binding(
+                        get: { model.authenticationMethod },
+                        set: { model.rememberAuthenticationMethod($0) }
+                    ))
+                    .disabled(model.changingProtection)
                     if let protectionError { Text(protectionError).foregroundStyle(.red) }
-                    Text("Face ID, Touch ID ou le code de l’appareil protège l’ouverture de ce coffre. Si vous désactivez cette option, toute personne utilisant l’appareil déverrouillé pourra l’ouvrir.")
+                    Text("Si vous désactivez l’authentification, toute personne utilisant l’appareil déverrouillé pourra l’ouvrir.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Picker("Verrouillage après inactivité", selection: $model.timeout) {
                         ForEach([30, 60, 120, 300, 900], id: \.self) { Text($0 < 60 ? "30 secondes" : "\($0 / 60) min").tag($0) }

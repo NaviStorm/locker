@@ -62,11 +62,9 @@ struct DeviceKeychain: DeviceKeyAccess {
                 kSecAttrGeneric as String: required ? Data("user-presence-v1".utf8) : Self.unlockedMarker]
     }
 
-    func changeProtection(required: Bool, context: LAContext, gate: SessionGate) async throws {
+    func changeProtection(required: Bool, method: VaultAuthenticationMethod, context: LAContext, gate: SessionGate) async throws {
         let reason = required ? "Activer la protection de ce coffre" : "Autoriser l’ouverture de ce coffre sans authentification"
-        guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) else {
-            throw VaultError.locked
-        }
+        try await method.confirm(using: context, reason: reason)
         try gate.check()
         var attributes = try protectionAttributes(required: required)
         attributes[kSecValueData as String] = try read(context: context).secret

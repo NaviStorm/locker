@@ -25,42 +25,50 @@ struct RootScreen: View {
             if model.store != nil {
                 LibraryScreen(model: model)
             } else {
-                VStack(spacing: 18) {
-                    Image(systemName: "lock.shield").font(.system(size: 52, weight: .light)).foregroundStyle(.tint)
-                        .accessibilityHidden(true)
-                    Text("Locker").font(.largeTitle.bold())
-                    if !model.slots.isEmpty {
-                        Picker("Coffre local", selection: $model.slot) {
-                            ForEach(model.slots, id: \.self) { Text(model.vaultNames[$0] ?? ("Coffre " + $0.prefix(8))).tag($0) }
-                        }.frame(maxWidth: 330)
-                        Button("Ouvrir le coffre") { model.open(.unlock) }.buttonStyle(.borderedProminent)
-                    }
-                    if !recovering || model.slots.isEmpty || !model.repairSelected {
-                        Toggle("Exiger une authentification pour le nouveau coffre", isOn: $protectNewKey)
-                    }
-                    if recovering {
-                        SecureField("Code de récupération", text: $code).textFieldStyle(.roundedBorder)
-                        Button("Récupérer le coffre") {
-                            let entered = code
-                            code = ""
-                            recovering = false
-                            model.open(.recover(entered), newSlot: model.slots.isEmpty || !model.repairSelected, protectNewKey: protectNewKey)
-                        }.disabled(code.isEmpty)
+                ScrollView {
+                    VStack(spacing: 18) {
+                        Image(systemName: "lock.shield").font(.system(size: 52, weight: .light)).foregroundStyle(.tint)
+                            .accessibilityHidden(true)
+                        Text("Locker").font(.largeTitle.bold())
                         if !model.slots.isEmpty {
-                            Toggle("Réparer le coffre sélectionné", isOn: $model.repairSelected)
+                            Picker("Coffre local", selection: $model.slot) {
+                                ForEach(model.slots, id: \.self) { Text(model.vaultNames[$0] ?? ("Coffre " + $0.prefix(8))).tag($0) }
+                            }.frame(maxWidth: 330)
                         }
-                    } else {
-                        if model.slots.isEmpty {
-                            if #available(iOS 26, macOS 26, *) {
-                                Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) }.buttonStyle(.glassProminent)
-                            } else {
-                                Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) }.buttonStyle(.borderedProminent)
+                        if !model.slots.isEmpty || protectNewKey {
+                            AuthenticationMethodPicker(selection: $model.authenticationMethod)
+                        }
+                        if !model.slots.isEmpty {
+                            Button("Ouvrir le coffre") { model.open(.unlock) }.buttonStyle(.borderedProminent)
+                        }
+                        if !recovering || model.slots.isEmpty || !model.repairSelected {
+                            Toggle("Exiger une authentification pour le nouveau coffre", isOn: $protectNewKey)
+                        }
+                        if recovering {
+                            SecureField("Code de récupération", text: $code).textFieldStyle(.roundedBorder)
+                            Button("Récupérer le coffre") {
+                                let entered = code
+                                code = ""
+                                recovering = false
+                                model.open(.recover(entered), newSlot: model.slots.isEmpty || !model.repairSelected, protectNewKey: protectNewKey)
+                            }.disabled(code.isEmpty)
+                            if !model.slots.isEmpty {
+                                Toggle("Réparer le coffre sélectionné", isOn: $model.repairSelected)
                             }
-                        } else { Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) } }
-                        Button("Utiliser un code de récupération") { recovering = true }
-                    }
-                    if model.opening { ProgressView("Ouverture du coffre…") }
-                }.padding(32).frame(maxWidth: 430).disabled(model.opening)
+                        } else {
+                            if model.slots.isEmpty {
+                                if #available(iOS 26, macOS 26, *) {
+                                    Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) }.buttonStyle(.glassProminent)
+                                } else {
+                                    Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) }.buttonStyle(.borderedProminent)
+                                }
+                            } else { Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) } }
+                            Button("Utiliser un code de récupération") { recovering = true }
+                        }
+                        if model.opening { ProgressView("Ouverture du coffre…") }
+                    }.padding(32).frame(maxWidth: 430).disabled(model.opening)
+                    .frame(maxWidth: .infinity)
+                }.defaultScrollAnchor(.center)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

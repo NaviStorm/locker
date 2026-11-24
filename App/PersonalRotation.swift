@@ -11,8 +11,8 @@ extension LockerModel {
         let gate = SessionGate()
         opening = true
         defer { auth.invalidate(); gate.revoke(); opening = false }
-        guard try await auth.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Créer une nouvelle clé pour ce coffre")
-        else { throw VaultError.locked }
+        let method = authenticationMethod
+        try await method.confirm(using: auth, reason: "Créer une nouvelle clé pour ce coffre")
         try source.gate.check()
         let device = DeviceKeychain(account: id, protectNewKey: requiresAuthentication)
         let target = try await Task.detached {
@@ -29,5 +29,6 @@ extension LockerModel {
         lock()
         let session = try VaultStore(root: destination, keys: VaultKeys(code: newCode))
         try await adoptRotated(session, slotID: id, code: newCode)
+        rememberAuthenticationMethod(method)
     }
 }
