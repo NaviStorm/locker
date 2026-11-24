@@ -58,6 +58,29 @@ struct ListedDocument: Identifiable, Equatable {
     let size: Int64
 }
 
+enum DocumentSortField: String {
+    case name, date, size
+
+    func sorted(_ documents: [ListedDocument], ascending: Bool) -> [ListedDocument] {
+        documents.sorted { lhs, rhs in
+            switch self {
+            case .date where lhs.created != rhs.created:
+                guard let left = lhs.created else { return false }
+                guard let right = rhs.created else { return true }
+                return ascending ? left < right : left > right
+            case .size where lhs.size != rhs.size:
+                return ascending ? lhs.size < rhs.size : lhs.size > rhs.size
+            default:
+                let order = lhs.labels.name.localizedStandardCompare(rhs.labels.name)
+                if order == .orderedSame {
+                    return ascending ? lhs.id.uuidString < rhs.id.uuidString : lhs.id.uuidString > rhs.id.uuidString
+                }
+                return order == (ascending ? .orderedAscending : .orderedDescending)
+            }
+        }
+    }
+}
+
 struct VaultLibrary {
     let documents: [ListedDocument]
     let folders: [String]
@@ -245,10 +268,7 @@ actor VaultStore {
                                                 labels: document.labels, size: document.size))
             }
         }
-        return VaultLibrary(documents: documents.sorted {
-            let order = $0.labels.name.localizedStandardCompare($1.labels.name)
-            return order == .orderedSame ? $0.id.uuidString < $1.id.uuidString : order == .orderedAscending
-        }, folders: Array(folders))
+        return VaultLibrary(documents: DocumentSortField.name.sorted(documents, ascending: true), folders: Array(folders))
     }
 
     func createFolder(_ proposed: String, in parent: String = "") throws -> String {

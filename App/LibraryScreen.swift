@@ -10,6 +10,8 @@ struct LibraryScreen: View {
     @State private var category = ""
     @State private var selection: UUID?
     @AppStorage("libraryShowsThumbnails") private var showsThumbnails = false
+    @AppStorage("libraryDocumentSortField") private var sortField = DocumentSortField.name
+    @AppStorage("libraryDocumentSortAscending") private var sortAscending = true
     @State private var selectingDocuments = false
     @State private var marked = Set<UUID>()
     @State private var moving = false
@@ -39,6 +41,12 @@ struct LibraryScreen: View {
                     .contains { $0.localizedStandardContains(query) })
         }
     }
+    private var orderedDocuments: [ListedDocument] {
+        // The catalogue already supplies documents in ascending name order.
+        if sortField == .name && sortAscending { return filtered }
+        return sortField.sorted(filtered, ascending: sortAscending)
+    }
+
     private var subfolders: [String] { model.library.subfolders(in: folder) }
     private var showsFolders: Bool {
         query.isEmpty && category.isEmpty && !subfolders.isEmpty
@@ -68,7 +76,7 @@ struct LibraryScreen: View {
             }
             if !filtered.isEmpty {
                 Section("Documents") {
-                    ForEach(filtered) { item in
+                    ForEach(orderedDocuments) { item in
                         if selectingDocuments {
                             markButton(item) { documentRow(item) }
                         } else {
@@ -158,6 +166,25 @@ struct LibraryScreen: View {
         #endif
     }
 
+    private var sortMenu: some View {
+        Menu {
+            Picker("Trier par", selection: $sortField) {
+                Text("Nom").tag(DocumentSortField.name)
+                Text("Date de la version").tag(DocumentSortField.date)
+                Text("Taille").tag(DocumentSortField.size)
+            }.pickerStyle(.inline)
+            Divider()
+            Picker("Ordre", selection: $sortAscending) {
+                Text("Croissant").tag(true)
+                Text("Décroissant").tag(false)
+            }.pickerStyle(.inline)
+        } label: {
+            Label("Trier les documents", systemImage: "arrow.up.arrow.down")
+        }
+        .labelStyle(.iconOnly)
+        .help("Trier les documents")
+    }
+
     private var collectionControls: some View {
         HStack {
             Picker("Affichage", selection: $showsThumbnails) {
@@ -166,6 +193,9 @@ struct LibraryScreen: View {
             }
             .pickerStyle(.segmented).labelStyle(.iconOnly).labelsHidden()
             .frame(width: 92)
+            #if os(iOS)
+            sortMenu
+            #endif
             Spacer()
             Button(selectingDocuments ? "Annuler" : "Sélectionner") {
                 selection = nil
@@ -193,7 +223,7 @@ struct LibraryScreen: View {
                         }.contextMenu { folderActions(name) }
                     }
                 }
-                ForEach(filtered) { item in
+                ForEach(orderedDocuments) { item in
                     let tile = DocumentTile(item: item, store: model.store)
                     if selectingDocuments {
                         markButton(item) { tile }
@@ -443,6 +473,7 @@ struct LibraryScreen: View {
                     categoryPicker.pickerStyle(.inline)
                 } label: { Label("Filtrer par catégorie", systemImage: "line.3.horizontal.decrease") }
                 .help(category.isEmpty ? "Filtrer par catégorie" : "Catégorie : \(category)")
+                sortMenu
                 Spacer(minLength: 8)
                 settingsButton
                 lockButton

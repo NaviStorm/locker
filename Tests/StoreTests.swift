@@ -20,6 +20,27 @@ class VaultTestCase: XCTestCase {
 }
 
 final class StoreTests: VaultTestCase {
+    func testDocumentSortFieldsInBothDirections() {
+        func row(_ name: String, _ day: Double?, _ size: Int64) -> ListedDocument {
+            let id = UUID()
+            return ListedDocument(lineage: id, created: day.map(Date.init(timeIntervalSince1970:)),
+                                  id: id, labels: Labels(name: name), size: size)
+        }
+        let a = row("Note 2", 30, 3), b = row("Note 10", 10, 500), c = row("Projet", 20, 1)
+        let rows = [b, a, c]
+        for (field, expected): (DocumentSortField, [ListedDocument]) in [
+            (.name, [a, b, c]), (.date, [b, c, a]), (.size, [c, a, b])
+        ] {
+            XCTAssertEqual(field.sorted(rows, ascending: true), expected)
+            XCTAssertEqual(field.sorted(rows, ascending: false), Array(expected.reversed()))
+        }
+        let undated = row("Ancien", nil, 3)
+        for ascending in [true, false] {
+            XCTAssertEqual(DocumentSortField.date.sorted([undated, a], ascending: ascending).last, undated)
+        }
+        XCTAssertEqual(DocumentSortField.size.sorted([a, undated], ascending: true), [undated, a])
+    }
+
     func testHistorySelectsSuccessorWhenDeviceClocksDisagree() {
         let original = UUID(), child = UUID()
         let labels = Labels(name: "Note.txt")
