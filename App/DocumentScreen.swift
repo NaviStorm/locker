@@ -12,6 +12,11 @@ struct DocumentScreen<Actions: View>: View {
     @State private var pdf: PagedPDF?
     @State private var notice = ""
     @State private var editing = false
+    @State private var editingPhoto = false
+    @State private var largePhoto: CGImage?
+    private var isPhoto: Bool {
+        UTType(filenameExtension: (item.labels.name as NSString).pathExtension)?.conforms(to: .image) == true
+    }
     @State private var exporting = false
     @State private var history: [Labels] = []
     @State private var showHistory = false
@@ -19,6 +24,7 @@ struct DocumentScreen<Actions: View>: View {
     var body: some View {
         VStack(spacing: 12) {
             if let pdf { LargePDFScreen(pdf: pdf) }
+            else if let largePhoto { Image(decorative: largePhoto, scale: 1).resizable().scaledToFit() }
             else if let bytes {
                 DocumentPreview(data: bytes, name: item.labels.name)
             } else if notice.isEmpty { ProgressView() }
@@ -44,6 +50,10 @@ struct DocumentScreen<Actions: View>: View {
         .navigationTitle(item.labels.name)
         .toolbar {
             ToolbarItemGroup {
+                if isPhoto {
+                    Button("Modifier la photo", systemImage: "slider.horizontal.3") { editingPhoto = true }
+                        .help("Modifier la photo")
+                }
                 if let bytes {
                     ShareLink(item: SharedBytes(bytes: bytes, name: item.labels.name),
                               preview: SharePreview(item.labels.name)) { Label("Partager une copie", systemImage: "square.and.arrow.up") }
@@ -74,10 +84,26 @@ struct DocumentScreen<Actions: View>: View {
                     pdf = paged
                     return
                 }
+                if item.size > 32 * 1024 * 1024, isPhoto {
+                    let preview = try await store.photoEditingPreview(item.id)
+                    try store.gate.check()
+                    largePhoto = preview
+                    return
+                }
                 let loaded = try await store.preview(item.id)
                 try store.gate.check()
                 bytes = loaded
             } catch { notice = error.localizedDescription }
+        }
+        .lockerPanel(isPresented: $editingPhoto) {
+            if let store = model.store {
+                PhotoEditorScreen(store: store, item: item) { id, library in
+                    guard model.store === store else { return }
+                    model.library = library
+                    model.activity()
+                    select(id)
+                }
+            }
         }
         .sheet(isPresented: $editing) { EditLabels(model: model, item: item) }
         .sheet(isPresented: $showHistory) {

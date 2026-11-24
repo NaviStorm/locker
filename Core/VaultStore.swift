@@ -303,17 +303,21 @@ actor VaultStore {
     }
 
     @discardableResult
-    func importData(_ data: Data, name: String, folder: String = "") throws -> UUID {
+    func importData(_ data: Data, name: String, folder: String = "", versionOf parent: UUID? = nil) throws -> UUID {
         var offset = 0
-        return try add(name: name, folder: folder) {
+        var labels = parent.flatMap { entries[$0]?.document?.labels }
+        labels?.name = name
+        return try add(name: name, parent: parent, folder: folder, labels: labels) {
             let end = min(data.count, offset + BlockCipher.chunk)
             defer { offset = end }
             return data.subdata(in: offset..<end)
         }
     }
 
-    private func add(name: String, parent: UUID? = nil, folder: String = "", isFolder: Bool? = nil, read: () throws -> Data) throws -> UUID {
-        let entry = try stageDocument(name: name, parent: parent, folder: folder, isFolder: isFolder, read: read)
+    private func add(name: String, parent: UUID? = nil, folder: String = "", isFolder: Bool? = nil, labels: Labels? = nil,
+                     read: () throws -> Data) throws -> UUID {
+        var entry = try stageDocument(name: name, parent: parent, folder: folder, isFolder: isFolder, read: read)
+        if let labels { entry.document?.labels = labels }
         do { try replace(entry) }
         catch { try? FileManager.default.removeItem(at: blob(entry.id)); throw error }
         return entry.id

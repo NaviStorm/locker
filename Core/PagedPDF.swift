@@ -4,7 +4,7 @@ import Foundation
 import ImageIO
 
 /// Core Graphics requests plaintext ranges from authenticated blocks. No plaintext backing file exists.
-private final class EncryptedRanges {
+final class EncryptedRanges {
     struct Frame {
         let plain: Int64
         let sealed: UInt64

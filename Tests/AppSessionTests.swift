@@ -202,6 +202,74 @@ final class AppSessionTests: VaultTestCase {
         XCTFail("Les deux commandes doivent être accessibles sans ouvrir de menu.")
     }
 
+    @MainActor private func button(_ label: String, in host: UIViewController) async throws -> NSObject {
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(50))
+            var visited = Set<ObjectIdentifier>()
+            func find(_ node: NSObject) -> NSObject? {
+                guard visited.insert(ObjectIdentifier(node)).inserted else { return nil }
+                if node.accessibilityLabel?.contains(label) == true, node.accessibilityTraits.contains(.button),
+                   !node.accessibilityTraits.contains(.notEnabled) {
+                    return node
+                }
+                let count = node.accessibilityElementCount()
+                var children = (node.accessibilityElements ?? []).compactMap { $0 as? NSObject }
+                if count > 0 && count != NSNotFound {
+                    children += (0..<count).compactMap { node.accessibilityElement(at: $0) as? NSObject }
+                }
+                children += (node as? UIView)?.subviews ?? []
+                for child in children { if let match = find(child) { return match } }
+                return nil
+            }
+            if let match = find(host.presentedViewController?.view ?? host.view) { return match }
+        }
+        throw TransportError(message: "Bouton absent : " + label)
+    }
+
+    @MainActor func testPhotoEditorSavesFromDocumentScreen() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("photos"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        let data = UIGraphicsImageRenderer(size: CGSize(width: 60, height: 40)).pngData { renderer in
+            UIColor.orange.setFill()
+            renderer.fill(CGRect(x: 0, y: 0, width: 60, height: 40))
+        }
+        let id = try await store.importData(data, name: "Image.png")
+        model.store = store
+        model.library = try await store.library()
+        let photo = try XCTUnwrap(model.documents.first)
+        var selected: UUID?
+        let host = UIHostingController(rootView: NavigationStack {
+            DocumentScreen(model: model, item: photo, select: { selected = $0 }, addVersion: {}, actions: EmptyView())
+        })
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        addTeardownBlock { @MainActor in
+            if let transition = host.presentedViewController?.transitionCoordinator {
+                await withCheckedContinuation { done in
+                    if !transition.animate(alongsideTransition: nil, completion: { _ in done.resume() }) {
+                        done.resume()
+                    }
+                }
+            }
+            if presenter.presentedViewController === host {
+                await withCheckedContinuation { done in presenter.dismiss(animated: false) { done.resume() } }
+            }
+        }
+        for label in ["Modifier la photo", "Rotation à droite", "Recadrer", "Appliquer le cadre", "Enregistrer"] {
+            let control = try await button(label, in: host)
+            if let button = control as? UIControl { button.sendActions(for: .primaryActionTriggered) }
+            else { XCTAssertTrue(control.accessibilityActivate(), label) }
+        }
+        for _ in 0..<40 where selected == nil { try await Task.sleep(for: .milliseconds(50)) }
+        let editedID = try XCTUnwrap(selected)
+        XCTAssertNotEqual(editedID, id)
+        XCTAssertEqual(model.documents.count, 2)
+        let image = try await store.photoEditingPreview(editedID)
+        XCTAssertLessThan(image.width, image.height)
+    }
+
     @MainActor func testThumbnailGridAllowsMarkingTwoDocuments() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
@@ -219,34 +287,11 @@ final class AppSessionTests: VaultTestCase {
         await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
         defer { host.dismiss(animated: false) }
 
-        func button(_ label: String) async throws -> NSObject {
-            for _ in 0..<20 {
-                try await Task.sleep(for: .milliseconds(50))
-                var visited = Set<ObjectIdentifier>()
-                func find(_ node: NSObject) -> NSObject? {
-                    guard visited.insert(ObjectIdentifier(node)).inserted else { return nil }
-                    if node.accessibilityLabel?.contains(label) == true && node.accessibilityTraits.contains(.button) {
-                        return node
-                    }
-                    let count = node.accessibilityElementCount()
-                    var children = (node.accessibilityElements ?? []).compactMap { $0 as? NSObject }
-                    if count > 0 && count != NSNotFound {
-                        children += (0..<count).compactMap { node.accessibilityElement(at: $0) as? NSObject }
-                    }
-                    children += (node as? UIView)?.subviews ?? []
-                    for child in children { if let match = find(child) { return match } }
-                    return nil
-                }
-                if let match = find(host.view) { return match }
-            }
-            throw TransportError(message: "Bouton absent : " + label)
-        }
-
         for label in ["Sélectionner", "Premier.txt", "Second.txt"] {
-            let control = try await button(label)
+            let control = try await button(label, in: host)
             XCTAssertTrue(control.accessibilityActivate(), label)
         }
-        _ = try await button("Déplacer (2)")
+        _ = try await button("Déplacer (2)", in: host)
     }
 
     @MainActor func testImportScreenOffersDecompressionBeforeChoosingAFile() async throws {
