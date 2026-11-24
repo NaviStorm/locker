@@ -24,9 +24,31 @@ fail() { printf 'Erreur : %s\n' "$*" >&2; exit 1; }
 iphone() {
     xcrun devicectl list devices --quiet --json-output - |
         /usr/bin/python3 -c '
-import json, sys
+import json, plistlib, subprocess, sys
+
+def usb_id(value):
+    return value.strip().casefold().replace("-", "")
+
+def wired_apple_devices():
+    # CoreDevice may close its developer tunnel while an iPhone is still on USB.
+    try:
+        raw = subprocess.check_output(["/usr/sbin/ioreg", "-a", "-l", "-p", "IOUSB", "-w", "0"])
+        tree = plistlib.loads(raw)
+    except (OSError, subprocess.CalledProcessError, ValueError, plistlib.InvalidFileException):
+        print("Inventaire USB indisponible. Affichage des connexions confirmées par Xcode.", file=sys.stderr)
+        return set()
+    nodes = [tree] if isinstance(tree, dict) else list(tree)
+    identifiers = set()
+    while nodes:
+        node = nodes.pop()
+        nodes.extend(node.get("IORegistryEntryChildren", []))
+        serial = node.get("USB Serial Number")
+        if node.get("idVendor") == 0x05AC and isinstance(serial, str) and serial.strip():
+            identifiers.add(usb_id(serial))
+    return identifiers
 
 mode, selector = sys.argv[1], sys.argv[2].strip().casefold()
+wired = wired_apple_devices()
 phones = []
 for device in json.load(sys.stdin)["result"]["devices"]:
     props = device.get("properties", {})
@@ -35,10 +57,14 @@ for device in json.load(sys.stdin)["result"]["devices"]:
     state = props.get("state") or device.get("deviceProperties", {})
     if hw.get("reality") != "physical" or hw.get("deviceType") != "iPhone":
         continue
-    if conn.get("state", conn.get("tunnelState")) != "connected":
+    udid = hw.get("udid")
+    if not udid:
         continue
-    phones.append((state.get("name", "").strip(), hw["udid"], hw.get("serialNumber") or "",
-                   conn.get("transportType") or ""))
+    on_usb = usb_id(udid) in wired
+    if not on_usb and conn.get("state", conn.get("tunnelState")) != "connected":
+        continue
+    transport = "wired" if on_usb else conn.get("transportType") or ""
+    phones.append((state.get("name", "").strip(), udid, hw.get("serialNumber") or "", transport))
 
 def listing(stream):
     if not phones:
