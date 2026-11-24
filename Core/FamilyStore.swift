@@ -39,6 +39,20 @@ extension VaultStore {
         return try family?.tip.decoded().members ?? []
     }
 
+    func updateMemberRole(_ member: Member, to role: FamilyRole, using device: DeviceIdentity? = nil) throws {
+        try gate.check()
+        guard let policy = try family?.tip.decoded(),
+              let current = policy.member(member.card.fingerprint),
+              current.role == member.role, current.documents == member.documents else { throw VaultError.changed }
+        let signer = try device ?? identity()
+        guard policy.member(signer.card.fingerprint)?.role == .admin, signer.card != member.card,
+              family?.recoveryFingerprint != member.card.fingerprint else {
+            throw FamilyError.denied
+        }
+        guard current.role != role else { return }
+        try changeMembership(card: current.card, role: role, scope: role == .admin ? nil : current.documents, using: signer)
+    }
+
     func changeMembership(card: PublicIdentity, role: FamilyRole?, scope: Set<UUID>?, using device: DeviceIdentity, reencrypt: Bool = false,
                           contact: TransportContact? = nil, cloudURL: URL? = nil) throws {
         try gate.check()
@@ -56,6 +70,7 @@ extension VaultStore {
         var members = old.members.filter { $0.card.fingerprint != card.fingerprint }
         if let role { members.append(Member(card: card, role: role, documents: scope)) }
         let next = try Policy.issue(members, prior: state.tip, by: device)
+        try state.trackPermissionChanges(from: old, to: next.decoded())
         if role == nil, let email = state.contacts?.removeValue(forKey: card.fingerprint),
            state.contacts?.values.contains(email) != true {
             state.removals = (state.removals ?? []) + [email]
@@ -82,6 +97,7 @@ extension VaultStore {
         guard var state = family else { throw FamilyError.policy }
         try next.verify(after: state.tip)
         let policy = try next.decoded()
+        try state.trackPermissionChanges(from: state.tip.decoded(), to: policy)
         let grant = policy.member(state.principal)
         let retained = entries.filter { grant?.covers($0.value.scope) == true }
         let removed = Set(entries.keys).subtracting(retained.keys)
@@ -147,6 +163,7 @@ extension VaultStore {
             try markSeen(name, epoch: digest)
             try acknowledge(id, revision: revision)
         }
+        try await finishProviderPermissionChanges(bucket)
     }
 
     /// Remove historical key envelopes from the live namespace after a durable signed deletion.

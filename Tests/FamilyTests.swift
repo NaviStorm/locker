@@ -6,6 +6,57 @@ import XCTest
 #endif
 
 final class FamilyTests: VaultTestCase {
+    func testExistingReaderCanBecomeAdministratorWithoutRejoining() async throws {
+        let owner = try DeviceIdentity(hardware: false)
+        let guest = try DeviceIdentity(hardware: false)
+        let root = location("propriétaire")
+        let keys = VaultKeys()
+        let host = try VaultStore(root: root, keys: keys, create: true)
+        let peer = try VaultStore(root: location("proche"), keys: VaultKeys(), create: true)
+        let bucket = FakeBucket()
+        try await host.createFamily(using: owner)
+        let allowed = try await host.importData(Data([1]), name: "Partagé")
+        let extra = try await host.importData(Data([2]), name: "Autre document")
+        let contact = TransportContact(email: "proche@example.invalid", destination: ProviderSettings().destination)
+        try await host.changeMembership(card: guest.card, role: .reader, scope: [allowed], using: owner, contact: contact)
+        let family = await host.family
+        let state = try XCTUnwrap(family)
+        let reader = try XCTUnwrap(state.tip.decoded().member(guest.card.fingerprint))
+        try await peer.joinFamily(FamilyInvitation.make(state: state, for: guest.card, by: owner), from: owner.card, using: guest)
+        try await host.synchronizeFamily(bucket: bucket, identity: owner)
+        try await peer.synchronizeFamily(bucket: bucket, identity: guest)
+        do { try await peer.updateMemberRole(reader, to: .admin, using: guest); XCTFail("Autopromotion") }
+        catch FamilyError.denied {}
+        try await host.updateMemberRole(reader, to: .editor, using: owner)
+        do { try await host.updateMemberRole(reader, to: .admin, using: owner); XCTFail("Ancien droit accepté") }
+        catch VaultError.changed {}
+        try await host.synchronizeFamily(bucket: bucket, identity: owner)
+        try await peer.synchronizeFamily(bucket: bucket, identity: guest)
+        try await peer.authorizeLocal(.edit, scope: allowed)
+        do { try await peer.authorizeLocal(.edit, scope: extra); XCTFail("Périmètre agrandi") } catch FamilyError.scope {}
+        let reopened = try VaultStore(root: root, keys: keys)
+        let stored = await reopened.family
+        XCTAssertNotNil(stored?.permissionUpdates?[guest.card.fingerprint])
+        let editor = try XCTUnwrap(stored?.tip.decoded().member(guest.card.fingerprint))
+        try await reopened.updateMemberRole(editor, to: .admin, using: owner)
+        try await reopened.synchronizeFamily(bucket: bucket, identity: owner)
+        try await peer.synchronizeFamily(bucket: bucket, identity: guest)
+        let data = try await peer.preview(extra)
+        XCTAssertEqual(data, Data([2]))
+        let third = try DeviceIdentity(hardware: false)
+        try await peer.changeMembership(card: third.card, role: .contributor, scope: nil, using: guest)
+        try await peer.synchronizeFamily(bucket: bucket, identity: guest)
+        try await reopened.synchronizeFamily(bucket: bucket, identity: owner)
+        let latest = await reopened.family
+        let admin = try XCTUnwrap(latest?.tip.decoded().member(guest.card.fingerprint))
+        XCTAssertEqual(admin.role, .admin)
+        try await reopened.updateMemberRole(admin, to: .reader, using: owner)
+        try await reopened.synchronizeFamily(bucket: bucket, identity: owner)
+        try await peer.synchronizeFamily(bucket: bucket, identity: guest)
+        do { try await peer.authorizeLocal(.edit, scope: allowed); XCTFail("Écriture après rétrogradation") }
+        catch FamilyError.denied {}
+    }
+
     func testScopedSharingOfflineRevocationAndRescue() async throws {
         let keys = VaultKeys()
         let owner = try DeviceIdentity(hardware: false)

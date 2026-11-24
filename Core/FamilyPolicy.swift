@@ -87,9 +87,29 @@ struct FamilyLocal: Codable {
     var cloudURL: URL?
     var contacts: [String: TransportContact]?
     var removals: [TransportContact]?
+    var permissionUpdates: [String: UUID]?
     var history: [PolicyCertificate]?
     var destination: String?
     var bootstrap: Bool?
+
+    var recoveryFingerprint: String? {
+        guard let initial = try? (history?.first ?? tip).decoded(), initial.parent == nil else { return nil }
+        return initial.members.first { $0.card.fingerprint != initial.author }?.card.fingerprint
+    }
+
+    mutating func trackPermissionChanges(from old: Policy, to new: Policy) {
+        guard let contacts else { return }
+        for fingerprint in contacts.keys {
+            guard let member = new.member(fingerprint) else {
+                permissionUpdates?.removeValue(forKey: fingerprint)
+                continue
+            }
+            if let previous = old.member(fingerprint), (previous.role == .reader) != (member.role == .reader) {
+                if permissionUpdates == nil { permissionUpdates = [:] }
+                permissionUpdates?[fingerprint] = UUID()
+            }
+        }
+    }
 }
 
 struct FamilyJoinDraft: Codable, Equatable {

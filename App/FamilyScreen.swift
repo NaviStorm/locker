@@ -28,6 +28,9 @@ struct FamilyScreen: View {
     @State private var issued = ""
     @State private var problem = ""
     @State private var working = false
+    @State private var editing: Member?
+    @State private var editedRole = FamilyRole.reader
+    @State private var recoveryFingerprint: String?
     @State private var revoke: Member?
     @State private var reencrypt = true
     @State private var rescue = ""
@@ -37,6 +40,7 @@ struct FamilyScreen: View {
     var body: some View {
         NavigationStack {
             Form {
+                if !members.isEmpty { authorizedDevices }
                 #if os(iOS)
                 if mine == nil && !manual && problem.isEmpty { ProgressView() }
                 if mine != nil, members.isEmpty || (isAdmin && [.local, .cloud].contains(model.configuration.provider)) {
@@ -55,22 +59,6 @@ struct FamilyScreen: View {
                     manualSharing
                 }
                 if !members.isEmpty {
-                    DisclosureGroup("Gérer les appareils autorisés") {
-                        ForEach(members, id: \.card.fingerprint) { member in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(member.card.fingerprint.prefix(16)).font(.system(.body, design: .monospaced))
-                                    Text(member.role.rawValue + " · " + (member.documents.map { "\($0.count) document(s)" } ?? "Tout le coffre"))
-                                        .font(.caption)
-                                }
-                                Spacer()
-                                if isAdmin, member.card.fingerprint != principal {
-                                    Button("Révoquer", role: .destructive) { revoke = member }
-                                }
-                            }
-                        }
-                        if isAdmin { Toggle("Rechiffrer les fichiers locaux à la révocation", isOn: $reencrypt) }
-                    }
                     if let mine {
                         DisclosureGroup("Ma carte publique") { deviceCard(mine) }
                     }
@@ -100,6 +88,10 @@ struct FamilyScreen: View {
             }
             #endif
             .vaultFormStyle().navigationTitle("Partage familial")
+            .onChange(of: model.syncing) {
+                guard !model.syncing, let store = model.store else { return }
+                Task { do { try await refresh(store) } catch { problem = error.localizedDescription } }
+            }
             .onChange(of: role) { issued = "" }
             .onChange(of: restricted) { issued = "" }
             .onChange(of: chosen) { issued = "" }
@@ -128,6 +120,52 @@ struct FamilyScreen: View {
                 }
                 try await refresh(store)
             } catch { problem = error.localizedDescription }
+        }
+    }
+
+    private var authorizedDevices: some View {
+        Section("Appareils autorisés") {
+            ForEach(members, id: \.card.fingerprint) { member in
+                let id = member.card.fingerprint
+                VStack(alignment: .leading, spacing: 6) {
+                    if id == principal { Text("Cet appareil").bold() }
+                    else if id == recoveryFingerprint { Text("Secours du propriétaire").bold() }
+                    Text(id.prefix(16)).font(.system(.body, design: .monospaced))
+                    Text(member.role.rawValue + " · " + (member.documents.map { "\($0.count) document(s)" } ?? "Tout le coffre"))
+                        .font(.caption)
+                    if isAdmin, id != principal, id != recoveryFingerprint {
+                        if let original = editing, original.card == member.card {
+                            Picker("Permission", selection: $editedRole) {
+                                ForEach(FamilyRole.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                            }
+                            if editedRole == .admin {
+                                Text("Cet appareil pourra gérer tous les documents du coffre et les droits des autres membres.")
+                                    .font(.footnote)
+                            }
+                            if model.configuration.provider == .webdav, editedRole != .reader {
+                                Text("Le compte du proche doit aussi avoir accès en écriture au dossier WebDAV sur le NAS.").font(.footnote)
+                            }
+                            HStack {
+                                Button("Enregistrer") {
+                                    let selected = editedRole
+                                    run { store in
+                                        try await store.updateMemberRole(original, to: selected)
+                                        editing = nil
+                                    }
+                                }.disabled(editedRole == original.role)
+                                Button("Annuler") { editing = nil }
+                            }
+                        } else {
+                            HStack {
+                                Button("Modifier les droits") { editedRole = member.role; editing = member }
+                                Spacer()
+                                Button("Révoquer", role: .destructive) { revoke = member }
+                            }
+                        }
+                    }
+                }.buttonStyle(.borderless)
+            }
+            if isAdmin { Toggle("Rechiffrer les fichiers locaux à la révocation", isOn: $reencrypt) }
         }
     }
 
@@ -337,8 +375,12 @@ struct FamilyScreen: View {
         mine = try await store.publicIdentity()
         let family = await store.family
         principal = family?.principal ?? ""
+        recoveryFingerprint = family?.recoveryFingerprint
         hasCloudInvitation = family?.cloudURL != nil
         members = try await store.members()
+        if let original = editing, !members.contains(where: {
+            $0.card == original.card && $0.role == original.role && $0.documents == original.documents
+        }) { editing = nil }
         model.familyMode = !members.isEmpty
         if isAdmin {
             do {

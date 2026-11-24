@@ -6,7 +6,7 @@ import XCTest
 @testable import Locker
 #endif
 
-final class TransportTests: XCTestCase {
+final class TransportTests: VaultTestCase {
     private func reply(_ request: URLRequest, status: Int, text: String = "", headers: [String: String] = [:]) -> (Data, HTTPURLResponse) {
         (Data(text.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!)
     }
@@ -83,6 +83,46 @@ final class TransportTests: XCTestCase {
             XCTAssertTrue(error.message.contains("(PUT)"))
             XCTAssertTrue(error.message.contains("HTTP 405"))
         }
+    }
+
+    func testDropboxRetriesUpdatingExistingParticipantAfterReopening() async throws {
+        let root = location("droits")
+        let keys = VaultKeys()
+        let host = try VaultStore(root: root, keys: keys, create: true)
+        let owner = try DeviceIdentity(hardware: false)
+        let guest = try DeviceIdentity(hardware: false)
+        let contact = TransportContact(email: "proche@example.invalid", destination: ProviderSettings().destination)
+        try await host.createFamily(using: owner)
+        try await host.changeMembership(card: guest.card, role: .reader, scope: nil, using: owner, contact: contact)
+        let reader = Member(card: guest.card, role: .reader, documents: nil)
+        try await host.updateMemberRole(reader, to: .admin, using: owner)
+        let offline = DropboxBucket(client: "", refresh: "", folder: "/coffre-fictif") { _ in
+            throw URLError(.notConnectedToInternet)
+        } renew: { _ in ["access_token": "fictif"] }
+        do { try await host.finishProviderPermissionChanges(offline); XCTFail("Panne ignorée") } catch is URLError {}
+        let reopened = try VaultStore(root: root, keys: keys)
+        let updated = expectation(description: "Droit Dropbox modifié")
+        let online = DropboxBucket(client: "", refresh: "", folder: "/coffre-fictif") { req in
+            switch req.url?.lastPathComponent {
+            case "get_metadata":
+                return self.reply(req, status: 200, text: #"{"shared_folder_id":"123"}"#)
+            case "list_folder_members":
+                return self.reply(req, status: 200, text: #"{"users":[],"cursor":"suite"}"#)
+            case "continue":
+                return self.reply(req, status: 200, text: #"{"users":[{"user":{"email":"PROCHE@example.invalid","account_id":"dbid:abc"},"access_type":{".tag":"viewer"}}]}"#)
+            case "update_folder_member":
+                let args = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(req.httpBody)) as? [String: Any])
+                XCTAssertEqual(args["member"] as? [String: String], [".tag": "dropbox_id", "dropbox_id": "dbid:abc"])
+                XCTAssertEqual(args["access_level"] as? String, "editor")
+                updated.fulfill()
+                return self.reply(req, status: 200)
+            default: throw VaultError.damaged
+            }
+        } renew: { _ in ["access_token": "fictif"] }
+        try await reopened.finishProviderPermissionChanges(online)
+        await fulfillment(of: [updated], timeout: 1)
+        let family = await reopened.family
+        XCTAssertNil(family?.permissionUpdates?[guest.card.fingerprint])
     }
 
     func testDropboxPaginationTokenAndRevision() async throws {
