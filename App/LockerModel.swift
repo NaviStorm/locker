@@ -4,7 +4,7 @@ import Observation
 
 @MainActor @Observable
 final class LockerModel {
-    typealias OpenSession = (AccessMode, URL, LAContext, SessionGate) async throws -> VaultStore
+    typealias OpenSession = (AccessMode, URL, LAContext, SessionGate, Bool) async throws -> VaultStore
     @ObservationIgnored private let openSession: OpenSession
     let base: URL
     var vaultNames: [String: String] = [:]
@@ -17,6 +17,8 @@ final class LockerModel {
     var vaultTitle: String { vaultNames[slot] ?? (familyMode ? "Coffre familial" : "Coffre personnel") }
     var extracting = false
     var opening = false
+    private(set) var changingProtection = false
+    private(set) var requiresAuthentication = true
     var repairSelected = false
     var problem: String?
     var configuration = ProviderSettings()
@@ -49,6 +51,7 @@ final class LockerModel {
         accessGate = session.gate
         let list = try await session.library()
         try session.gate.check()
+        requiresAuthentication = DeviceKeychain(account: slotID).requiresAuthentication()
         slot = slotID
         store = session
         library = list
@@ -80,6 +83,7 @@ final class LockerModel {
         accessGate?.revoke()
         context?.invalidate()
         context = nil
+        changingProtection = false
         syncTask?.cancel()
         syncTask = nil
         accessGate = nil
@@ -96,18 +100,41 @@ final class LockerModel {
     }
 
     nonisolated static func authenticateAndOpen(_ mode: AccessMode, at root: URL,
-                                                context: LAContext, gate: SessionGate) async throws -> VaultStore {
-        if case .unlock = mode {} else {
-            guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Autoriser ce coffre sur cet appareil")
+                                                context: LAContext, gate: SessionGate,
+                                                protectNewKey: Bool) async throws -> VaultStore {
+        var device = DeviceKeychain(account: root.lastPathComponent, protectNewKey: protectNewKey)
+        switch mode {
+        case .unlock:
+            device.protectNewKey = device.requiresAuthentication()
+        case .recover where FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.v1").path):
+            device.protectNewKey = device.requiresAuthentication()
+        default: break
+        }
+        if device.protectNewKey {
+            guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Accéder à ce coffre sur cet appareil")
             else { throw VaultError.locked }
         }
-        let device = DeviceKeychain(account: root.lastPathComponent)
         return try await Task.detached {
             try VaultAccess.open(mode, at: root, device: device, context: context, gate: gate)
         }.value
     }
 
-    func open(_ mode: AccessMode, newSlot: Bool = false, afterOpen: (() -> Void)? = nil) {
+    func setAuthenticationRequired(_ required: Bool) async throws {
+        guard let session = store, !opening, !changingProtection, required != requiresAuthentication else { return }
+        let auth = LAContext()
+        let device = DeviceKeychain(account: slot)
+        activity()
+        context = auth
+        changingProtection = true
+        defer {
+            auth.invalidate()
+            if context === auth { context = nil; changingProtection = false; activity() }
+        }
+        try await device.changeProtection(required: required, context: auth, gate: session.gate)
+        if store === session { requiresAuthentication = required }
+    }
+
+    func open(_ mode: AccessMode, newSlot: Bool = false, protectNewKey: Bool = true, afterOpen: (() -> Void)? = nil) {
         guard !opening, store == nil else { return }
         let selected = newSlot ? UUID().uuidString : slot
         guard UUID(uuidString: selected) != nil else { return }
@@ -121,7 +148,7 @@ final class LockerModel {
         Task {
             defer { if accessGate === gate { opening = false; auth.invalidate(); context = nil } }
             do {
-                let session = try await openSession(mode, root, auth, gate)
+                let session = try await openSession(mode, root, auth, gate, protectNewKey)
                 let list = try await session.library()
                 let shared = await session.family != nil
                 let config: ProviderSettings
@@ -134,6 +161,7 @@ final class LockerModel {
                 let code: String?
                 if case .create = mode { code = try await session.recoveryCode() } else { code = nil }
                 try gate.check()
+                requiresAuthentication = DeviceKeychain(account: selected).requiresAuthentication()
                 slot = selected
                 if !slots.contains(selected) { slots.append(selected) }
                 library = list

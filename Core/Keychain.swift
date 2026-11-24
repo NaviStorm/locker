@@ -16,7 +16,9 @@ struct KeychainFailure: LocalizedError {
 
 struct DeviceKeychain: DeviceKeyAccess {
     var account = "root-v1"
-    private var query: [String: Any] {
+    var protectNewKey = true
+    private static let unlockedMarker = Data("device-unlocked-v1".utf8)
+    var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "Locker") + ".vault",
          kSecAttrAccount as String: account,
@@ -34,18 +36,50 @@ struct DeviceKeychain: DeviceKeyAccess {
         return try VaultKeys(secret: data)
     }
 
-    func install(_ keys: VaultKeys, context: LAContext) throws {
+    // Older items have no marker and require user presence. The ACL enforces access.
+    func requiresAuthentication() -> Bool {
+        var lookup = query
+        let silent = LAContext()
+        silent.interactionNotAllowed = true
+        lookup[kSecUseAuthenticationContext as String] = silent
+        lookup[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(lookup as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any] else { return true }
+        return attributes[kSecAttrGeneric as String] as? Data != Self.unlockedMarker
+    }
+
+    private func protectionAttributes(required: Bool) throws -> [String: Any] {
+        var accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         #if os(iOS)
-        let protection = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
-        #else
-        let protection = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        if required { accessibility = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly }
         #endif
         var error: Unmanaged<CFError>?
-        guard let control = SecAccessControlCreateWithFlags(nil, protection, .userPresence, &error) else {
+        guard let control = SecAccessControlCreateWithFlags(nil, accessibility, required ? .userPresence : [], &error) else {
             throw error?.takeRetainedValue() as Error? ?? VaultError.unavailable
         }
-        var item = query
-        item[kSecAttrAccessControl as String] = control
+        return [kSecAttrAccessControl as String: control,
+                kSecAttrGeneric as String: required ? Data("user-presence-v1".utf8) : Self.unlockedMarker]
+    }
+
+    func changeProtection(required: Bool, context: LAContext, gate: SessionGate) async throws {
+        let reason = required ? "Activer la protection de ce coffre" : "Autoriser l’ouverture de ce coffre sans authentification"
+        guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) else {
+            throw VaultError.locked
+        }
+        try gate.check()
+        var attributes = try protectionAttributes(required: required)
+        attributes[kSecValueData as String] = try read(context: context).secret
+        var lookup = query
+        lookup[kSecUseAuthenticationContext as String] = context
+        try gate.authorized {
+            let status = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
+            guard status == errSecSuccess else { throw KeychainFailure(status: status) }
+        }
+    }
+
+    func install(_ keys: VaultKeys, context: LAContext) throws {
+        var item = query.merging(try protectionAttributes(required: protectNewKey)) { _, new in new }
         item[kSecValueData as String] = keys.secret
         item[kSecUseAuthenticationContext as String] = context
         let status = SecItemAdd(item as CFDictionary, nil)
@@ -60,7 +94,7 @@ struct DeviceKeychain: DeviceKeyAccess {
 enum AccessMode { case unlock, create, recover(String) }
 
 enum VaultAccess {
-    /// Caller authenticates the context for enrolment. Reading the item always enforces its own ACL.
+    /// Reading the item enforces the access control chosen for this vault on this device.
     static func open(_ mode: AccessMode, at root: URL, device: DeviceKeyAccess,
                      context: LAContext, gate: SessionGate) throws -> VaultStore {
         let catalog = root.appendingPathComponent("catalog.v1")

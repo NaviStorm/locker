@@ -1,6 +1,7 @@
 #if !SWIFT_PACKAGE
 import XCTest
 #if targetEnvironment(simulator)
+import LocalAuthentication
 import Security
 import SwiftUI
 #endif
@@ -8,6 +9,65 @@ import SwiftUI
 
 final class AppSessionTests: VaultTestCase {
     #if targetEnvironment(simulator)
+    func testDeviceOnlyVaultUsesItsOwnKeychainProtection() async throws {
+        guard ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
+            throw XCTSkip("Ce test utilise le Trousseau du simulateur iPhone Duo.")
+        }
+        final class ConfirmedContext: LAContext {
+            override func evaluatePolicy(_ policy: LAPolicy, localizedReason: String) async throws -> Bool {
+                XCTAssertEqual(policy, .deviceOwnerAuthentication)
+                return true
+            }
+        }
+        let id = UUID().uuidString
+        let root = location(id)
+        let device = DeviceKeychain(account: id)
+        defer { SecItemDelete(device.query as CFDictionary) }
+        func silentContext() -> LAContext {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            return context
+        }
+        let opened = try await LockerModel.authenticateAndOpen(.create, at: root, context: silentContext(),
+                                                               gate: SessionGate(), protectNewKey: false)
+        let document = try await opened.importData(Data([42]), name: "Exemple")
+        opened.gate.revoke()
+        XCTAssertFalse(device.requiresAuthentication())
+        let reopened = try await LockerModel.authenticateAndOpen(.unlock, at: root, context: silentContext(),
+                                                                 gate: SessionGate(), protectNewKey: true)
+        let contents = try await reopened.preview(document)
+        XCTAssertEqual(contents, Data([42]))
+        XCTAssertTrue(DeviceKeychain(account: UUID().uuidString).requiresAuthentication())
+        do {
+            try await device.changeProtection(required: true, context: silentContext(), gate: reopened.gate)
+            XCTFail("La modification doit demander confirmation")
+        } catch {}
+        XCTAssertFalse(device.requiresAuthentication())
+        do {
+            try await device.changeProtection(required: true, context: ConfirmedContext(), gate: opened.gate)
+            XCTFail("Un coffre fermé doit refuser le changement de protection")
+        } catch VaultError.locked {}
+        XCTAssertFalse(device.requiresAuthentication())
+        try await device.changeProtection(required: true, context: ConfirmedContext(), gate: reopened.gate)
+        XCTAssertTrue(device.requiresAuthentication())
+        var lookup = device.query
+        lookup[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(lookup as CFDictionary, &result), errSecSuccess)
+        let attributes = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(attributes[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly as String)
+        do {
+            _ = try await LockerModel.authenticateAndOpen(.unlock, at: root, context: silentContext(),
+                                                          gate: SessionGate(), protectNewKey: false)
+            XCTFail("L’ouverture protégée exige une authentification, même si la création propose un autre choix.")
+        } catch {}
+        try await device.changeProtection(required: false, context: ConfirmedContext(), gate: reopened.gate)
+        let restored = try await LockerModel.authenticateAndOpen(.unlock, at: root, context: silentContext(),
+                                                                 gate: SessionGate(), protectNewKey: true)
+        let afterChange = try await restored.preview(document)
+        XCTAssertEqual(afterChange, contents)
+    }
+
     @MainActor func testClosedDuoReturnButtons() async throws {
         guard #available(iOS 27.1, *),
               ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
@@ -87,11 +147,14 @@ final class AppSessionTests: VaultTestCase {
         let original = try VaultStore(root: originalRoot, keys: keys, create: true)
         _ = try VaultStore(root: otherRoot, keys: keys, create: true)
         var deny = true
-        let model = LockerModel(base: base) { mode, root, _, gate in
+        var newProtection: Bool?
+        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey in
             if deny { throw VaultError.locked }
             switch mode {
             case .unlock: return try VaultStore(root: root, keys: keys, gate: gate)
-            case .create: return try VaultStore(root: root, keys: VaultKeys(), create: true, gate: gate)
+            case .create:
+                newProtection = protectNewKey
+                return try VaultStore(root: root, keys: VaultKeys(), create: true, gate: gate)
             case .recover: throw VaultError.unavailable
             }
         }
@@ -118,8 +181,9 @@ final class AppSessionTests: VaultTestCase {
         try await settle()
         XCTAssertEqual(model.slot, otherID)
         XCTAssertEqual(model.library.documents(in: "").map(\.labels.name), ["note.txt"])
-        model.extract(files, to: .new, folder: "Source")
+        model.extract(files, to: .new, folder: "Source", protectNewKey: false)
         try await settle()
+        XCTAssertEqual(newProtection, false)
         XCTAssertEqual(model.slots.count, 3)
         XCTAssertNotEqual(model.slot, otherID)
         XCTAssertNotNil(model.recovery)

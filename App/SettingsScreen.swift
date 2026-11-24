@@ -8,6 +8,7 @@ struct SettingsScreen: View {
     @State private var draft: ProviderSettings
     @State private var vaultName: String
     @State private var nameError: String?
+    @State private var protectionError: String?
     @State private var password = ""
     @State private var savedPasswordFor: ProviderSettings?
     @State private var editingPassword = false
@@ -45,6 +46,20 @@ struct SettingsScreen: View {
                 } header: { Text("Nom du coffre") }
                   footer: { Text("Ce nom est visible sur cet appareil avant le déverrouillage.") }
                 Section("Sécurité") {
+                    Toggle("Exiger une authentification à l’ouverture", isOn: Binding(
+                        get: { model.requiresAuthentication },
+                        set: { value in
+                            protectionError = nil
+                            Task {
+                                do { try await model.setAuthenticationRequired(value) }
+                                catch { protectionError = error.localizedDescription }
+                            }
+                        }
+                    ))
+                    .disabled(model.changingProtection)
+                    if let protectionError { Text(protectionError).foregroundStyle(.red) }
+                    Text("Face ID, Touch ID ou le code de l’appareil protège l’ouverture de ce coffre. Si vous désactivez cette option, toute personne utilisant l’appareil déverrouillé pourra l’ouvrir.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     Picker("Verrouillage après inactivité", selection: $model.timeout) {
                         ForEach([30, 60, 120, 300, 900], id: \.self) { Text($0 < 60 ? "30 secondes" : "\($0 / 60) min").tag($0) }
                     }

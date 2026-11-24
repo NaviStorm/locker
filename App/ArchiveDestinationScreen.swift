@@ -25,6 +25,7 @@ struct ArchiveDestinationScreen: View {
     let folder: String
     @Environment(\.dismiss) private var dismiss
     @State private var destination: ArchiveDestination
+    @State private var protectNewKey = true
 
     init(model: LockerModel, files: SelectedImport, folder: String) {
         self.model = model
@@ -48,6 +49,9 @@ struct ArchiveDestinationScreen: View {
                         }
                         Text("Nouveau coffre").tag(ArchiveDestination.new)
                     }
+                    if destination == .new {
+                        Toggle("Exiger une authentification pour le nouveau coffre", isOn: $protectNewKey)
+                    }
                 } footer: {
                     if destination == .existing(model.slot) && !folder.isEmpty {
                         Text("Dossier de destination : \(folder)")
@@ -55,7 +59,7 @@ struct ArchiveDestinationScreen: View {
                 }
                 Button("Décompresser dans ce coffre") {
                     dismiss()
-                    model.extract(files, to: destination, folder: folder)
+                    model.extract(files, to: destination, folder: folder, protectNewKey: protectNewKey)
                 }
                 Button("Importer sans décompresser dans le coffre ouvert") {
                     dismiss()
@@ -77,7 +81,7 @@ extension LockerModel {
         }
     }
 
-    func extract(_ files: SelectedImport, to destination: ArchiveDestination, folder: String) {
+    func extract(_ files: SelectedImport, to destination: ArchiveDestination, folder: String, protectNewKey: Bool = true) {
         guard store != nil, !extracting else { return }
         if destination == .existing(slot) {
             extractHere(files, folder: folder)
@@ -94,7 +98,7 @@ extension LockerModel {
             slot = id
             open(.unlock, afterOpen: afterOpen)
         case .new:
-            open(.create, newSlot: true, afterOpen: afterOpen)
+            open(.create, newSlot: true, protectNewKey: protectNewKey, afterOpen: afterOpen)
         }
     }
 

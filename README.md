@@ -19,7 +19,7 @@ swift test
 
 ## Utiliser le coffre
 
-- **Premier appareil.** Choisir **Créer un coffre**, s’authentifier et recopier le code de récupération. Chaque coffre a sa clé, sa file et son fournisseur. Les identifiants courts permettent de sélectionner le coffre avant authentification.
+- **Premier appareil.** Choisir si le nouveau coffre exige une authentification, puis **Créer un coffre** et recopier le code de récupération. Ce choix se modifie dans **Réglages du coffre → Sécurité** sur chaque appareil. Chaque coffre a sa clé, sa file et son fournisseur. Les identifiants courts permettent de sélectionner le coffre avant authentification.
 - **Documents.** Le bouton **Ajouter** ouvre Fichiers ou la caméra. VisionKit produit un PDF multipage sur les appareils compatibles. Sur Mac, la caméra fournit une photographie. La fiche contient le nom, le dossier, la catégorie et la description. Les filtres et la recherche s’appliquent après déverrouillage.
 - **Dossiers.** À la racine, le bouton **Nouveau dossier** (icône de dossier avec un signe plus) crée un dossier. La racine affiche les dossiers et les documents sans dossier. Chaque dossier affiche les documents qu’il contient.
 - **Archives.** Dans **Ajouter → Importer un fichier**, sélectionnez une archive ZIP, TAR (y compris compressée), 7z, RAR, GZip, BZip2 ou XZ. Choisissez le coffre ouvert, un autre coffre local ou **Nouveau coffre**, puis **Décompresser dans ce coffre**. Vous pouvez aussi conserver le fichier original. Les chemins internes deviennent des noms de dossier dans Locker. Les archives protégées par mot de passe ne sont pas prises en charge.

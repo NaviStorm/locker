@@ -17,6 +17,7 @@ struct RootScreen: View {
     @Bindable var model: LockerModel
     @Environment(\.scenePhase) private var phase
     @State private var code = ""
+    @State private var protectNewKey = true
     @State private var recovering = false
 
     var body: some View {
@@ -32,7 +33,10 @@ struct RootScreen: View {
                         Picker("Coffre local", selection: $model.slot) {
                             ForEach(model.slots, id: \.self) { Text(model.vaultNames[$0] ?? ("Coffre " + $0.prefix(8))).tag($0) }
                         }.frame(maxWidth: 330)
-                        Button("Déverrouiller") { model.open(.unlock) }.buttonStyle(.borderedProminent)
+                        Button("Ouvrir le coffre") { model.open(.unlock) }.buttonStyle(.borderedProminent)
+                    }
+                    if !recovering || model.slots.isEmpty || !model.repairSelected {
+                        Toggle("Exiger une authentification pour le nouveau coffre", isOn: $protectNewKey)
                     }
                     if recovering {
                         SecureField("Code de récupération", text: $code).textFieldStyle(.roundedBorder)
@@ -40,7 +44,7 @@ struct RootScreen: View {
                             let entered = code
                             code = ""
                             recovering = false
-                            model.open(.recover(entered), newSlot: model.slots.isEmpty || !model.repairSelected)
+                            model.open(.recover(entered), newSlot: model.slots.isEmpty || !model.repairSelected, protectNewKey: protectNewKey)
                         }.disabled(code.isEmpty)
                         if !model.slots.isEmpty {
                             Toggle("Réparer le coffre sélectionné", isOn: $model.repairSelected)
@@ -48,14 +52,14 @@ struct RootScreen: View {
                     } else {
                         if model.slots.isEmpty {
                             if #available(iOS 26, macOS 26, *) {
-                                Button("Créer un coffre") { model.open(.create, newSlot: true) }.buttonStyle(.glassProminent)
+                                Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) }.buttonStyle(.glassProminent)
                             } else {
-                                Button("Créer un coffre") { model.open(.create, newSlot: true) }.buttonStyle(.borderedProminent)
+                                Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) }.buttonStyle(.borderedProminent)
                             }
-                        } else { Button("Créer un coffre") { model.open(.create, newSlot: true) } }
+                        } else { Button("Créer un coffre") { model.open(.create, newSlot: true, protectNewKey: protectNewKey) } }
                         Button("Utiliser un code de récupération") { recovering = true }
                     }
-                    if model.opening { ProgressView("Authentification…") }
+                    if model.opening { ProgressView("Ouverture du coffre…") }
                 }.padding(32).frame(maxWidth: 430).disabled(model.opening)
             }
         }
@@ -63,12 +67,15 @@ struct RootScreen: View {
         .background(PrivacyMonitor(activity: { model.activity() }, background: {
             code = ""
             #if os(macOS)
-            if !model.opening || model.store != nil { model.lock() }
+            if !model.changingProtection && (!model.opening || model.store != nil) { model.lock() }
             #else
             model.lock()
             #endif
         }))
         .privacySensitive()
+        .onChange(of: model.store != nil) { _, opened in
+            if opened { protectNewKey = true }
+        }
         .onChange(of: phase) { _, new in
             if new == .background { code = ""; model.lock() }
         }

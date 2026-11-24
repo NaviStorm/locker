@@ -14,8 +14,9 @@ extension LockerModel {
         guard try await auth.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Créer une nouvelle clé pour ce coffre")
         else { throw VaultError.locked }
         try source.gate.check()
+        let device = DeviceKeychain(account: id, protectNewKey: requiresAuthentication)
         let target = try await Task.detached {
-            try VaultAccess.open(.create, at: staging, device: DeviceKeychain(account: id), context: auth, gate: gate)
+            try VaultAccess.open(.create, at: staging, device: device, context: auth, gate: gate)
         }.value
         defer { if FileManager.default.fileExists(atPath: staging.path) { try? FileManager.default.removeItem(at: staging) } }
         try await source.copyPersonalContents(to: target)
