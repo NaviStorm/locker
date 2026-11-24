@@ -167,7 +167,13 @@ final class AppSessionTests: VaultTestCase {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
         let model = LockerModel(base: location("barre"))
-        let host = UIHostingController(rootView: LibraryScreen(model: model))
+        model.library = VaultLibrary(documents: [
+            ListedDocument(lineage: UUID(), created: nil, id: UUID(),
+                           labels: Labels(name: "Contrat habitation.pdf", category: "Assurance"), size: 482_000),
+            ListedDocument(lineage: UUID(), created: nil, id: UUID(),
+                           labels: Labels(name: "Inventaire.xlsx", category: "Maison"), size: 24_000)
+        ], folders: ["Administration", "Maison"])
+        let host = UIHostingController(rootView: LibraryScreen(model: model).tint(Color.lockerTint))
         host.modalPresentationStyle = .fullScreen
         presenter.present(host, animated: false)
         defer { host.dismiss(animated: false) }
@@ -183,6 +189,13 @@ final class AppSessionTests: VaultTestCase {
                 let frame = folder.convert(folder.bounds, to: host.view)
                 XCTAssertTrue(host.view.bounds.intersects(frame))
                 XCTAssertFalse(frame.intersects(add.convert(add.bounds, to: host.view)))
+                let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                }
+                let capture = XCTAttachment(image: image)
+                capture.name = "Bibliothèque iPhone"
+                capture.lifetime = .keepAlways
+                self.add(capture)
                 return
             }
         }

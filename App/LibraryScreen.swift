@@ -33,72 +33,117 @@ struct LibraryScreen: View {
         folder.isEmpty && query.isEmpty && category.isEmpty && !model.library.folders.isEmpty
     }
 
+    private func documentList(compact: Bool = false) -> some View {
+        List(selection: compact ? nil : $selection) {
+            if showsFolders {
+                Section("Dossiers") {
+                    ForEach(model.library.folders, id: \.self) { name in
+                        Button { folder = name } label: {
+                            HStack(spacing: 12) {
+                                VaultGlyph(symbol: "folder.fill")
+                                Text(name).font(.body.weight(.medium))
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.forward").font(.caption2.weight(.bold))
+                                    .foregroundStyle(.tertiary).accessibilityHidden(true)
+                            }
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain).padding(.vertical, 2)
+                    }
+                }
+            }
+            if !filtered.isEmpty {
+                Section("Documents") {
+                    ForEach(filtered) { item in
+                        NavigationLink(value: item.id) {
+                            HStack(spacing: 12) {
+                                DocumentGlyph(name: item.labels.name)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.labels.name).font(.body.weight(.medium)).lineLimit(2)
+                                    Text([item.labels.category, item.size.formatted(.byteCount(style: .file))]
+                                        .filter { !$0.isEmpty }.joined(separator: " · "))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }.padding(.vertical, 3)
+                        }
+                        .contextMenu { documentActions(for: item) }
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Color.lockerCanvas)
+        #if os(iOS)
+        .listStyle(.insetGrouped)
+        #else
+        .listStyle(.inset)
+        #endif
+        .overlay {
+            if filtered.isEmpty && !showsFolders {
+                let searching = !query.isEmpty || !category.isEmpty
+                ContentUnavailableView {
+                    Label(searching ? "Aucun résultat" : "Aucun document",
+                          systemImage: searching ? "magnifyingglass" : "tray")
+                } actions: {
+                    if searching {
+                        Button("Effacer les filtres") { query = ""; category = "" }
+                    } else {
+                        importButton
+                    }
+                }
+            }
+        }
+        .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
+        .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
+        .onChange(of: folder) { category = ""; query = "" }
+        .onChange(of: selectedDocument?.id) { _, id in
+            if id == nil { selection = nil }
+        }
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: folder.isEmpty ? .navigation : .automatic) { folderButton }
+            ToolbarItemGroup {
+                Menu {
+                    importButton
+                    if ScanScreen.supported {
+                        Button("Numériser", systemImage: "document.viewfinder") { scanner = true }
+                    }
+                } label: { Label("Ajouter", systemImage: "plus") }
+                Menu {
+                    folderPicker
+                    categoryPicker
+                } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
+                Menu {
+                    settingsButton
+                    lockButton
+                } label: { Label("Coffre", systemImage: "lock.shield") }
+            }
+        }
+        #endif
+    }
+
+    private func documentView(_ item: ListedDocument) -> some View {
+        DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
+            versionParent = item.id
+            importer = true
+        }, actions: documentActions(for: item)).id(item.id)
+    }
+
     private var browser: some View {
         NavigationSplitView {
-            List(selection: $selection) {
-                if showsFolders {
-                    Section("Dossiers") {
-                        ForEach(model.library.folders, id: \.self) { name in
-                            Button { folder = name } label: { Label(name, systemImage: "folder") }
-                        }
-                    }
-                }
-                ForEach(filtered) { item in
-                    NavigationLink(value: item.id) {
-                        Label {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.labels.name).lineLimit(2)
-                                Text([item.labels.folder, item.labels.category,
-                                      ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)]
-                                    .filter { !$0.isEmpty }.joined(separator: " · "))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        } icon: { Image(systemName: "doc.text").foregroundStyle(.tint) }
-                    }
-                    .contextMenu { documentActions(for: item) }
-                }
-            }
-            .overlay {
-                if filtered.isEmpty && !showsFolders {
-                    ContentUnavailableView(query.isEmpty ? "Aucun document" : "Aucun résultat",
-                                           systemImage: query.isEmpty ? "folder" : "magnifyingglass")
-                }
-            }
-            .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
-            .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
-            .onChange(of: folder) { category = ""; query = "" }
-            .onChange(of: selectedDocument?.id) { _, id in
-                if id == nil { selection = nil }
-            }
-            #if os(iOS)
-            .toolbar {
-                ToolbarItem(placement: folder.isEmpty ? .navigation : .automatic) { folderButton }
-                ToolbarItemGroup {
-                    Menu {
-                        importButton
-                        if ScanScreen.supported {
-                            Button("Numériser", systemImage: "document.viewfinder") { scanner = true }
-                        }
-                    } label: { Label("Ajouter", systemImage: "plus") }
-                    Menu {
-                        folderPicker
-                        categoryPicker
-                    } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
-                    Menu {
-                        settingsButton
-                        lockButton
-                    } label: { Label("Coffre", systemImage: "lock.shield") }
-                }
-            }
-            #endif
+            documentList()
+                #if os(macOS)
+                .frame(minWidth: 210)
+                .navigationSplitViewColumnWidth(min: 210, ideal: 270, max: 360)
+                #endif
         } detail: {
             if let item = selectedDocument {
-                DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
-                    versionParent = item.id
-                    importer = true
-                }, actions: documentActions(for: item)).id(item.id)
+                documentView(item)
             } else {
-                ContentUnavailableView("Sélectionnez un document", systemImage: "doc.text.magnifyingglass")
+                VaultOverview(title: folder.isEmpty ? model.vaultTitle : folder,
+                              provider: model.configuration.provider.rawValue,
+                              documents: filtered,
+                              folderCount: folder.isEmpty ? model.library.folders.count : nil,
+                              open: selectVersion)
             }
         }
     }
@@ -206,11 +251,23 @@ struct LibraryScreen: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.bordered)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
             .background(.bar)
             Divider()
-            browser
+            GeometryReader { geometry in
+                if geometry.size.width < 680 {
+                    NavigationStack(path: Binding(get: { selection.map { [$0] } ?? [] },
+                                                  set: { selection = $0.last })) {
+                        documentList(compact: true)
+                            .navigationDestination(for: UUID.self) { id in
+                                if let item = model.documents.first(where: { $0.id == id }) {
+                                    documentView(item)
+                                }
+                            }
+                    }
+                } else { browser }
+            }
         }
         #else
         browser

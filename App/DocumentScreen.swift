@@ -25,6 +25,22 @@ struct DocumentScreen<Actions: View>: View {
             else { ContentUnavailableView("Aperçu indisponible", systemImage: "doc", description: Text(notice)) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.lockerCanvas)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 10) {
+                if !item.labels.folder.isEmpty {
+                    Label(item.labels.folder, systemImage: "folder").lineLimit(1)
+                }
+                if !item.labels.category.isEmpty {
+                    Label(item.labels.category, systemImage: "tag").lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text(item.size.formatted(.byteCount(style: .file))).monospacedDigit()
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(.bar)
+        }
         .navigationTitle(item.labels.name)
         .toolbar {
             ToolbarItemGroup {
@@ -122,7 +138,7 @@ private struct EditLabels: View {
                 }
                 TextField("Catégorie", text: $labels.category)
                 TextField("Description", text: $labels.notes, axis: .vertical)
-            }.formStyle(.grouped).navigationTitle("Fiche du document")
+            }.vaultFormStyle().navigationTitle("Fiche du document")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

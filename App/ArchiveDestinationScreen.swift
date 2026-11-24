@@ -66,7 +66,7 @@ struct ArchiveDestinationScreen: View {
                     model.importOriginals(files, parent: nil, folder: folder)
                 }
             }
-            .formStyle(.grouped)
+            .vaultFormStyle()
             .navigationTitle("Importer une archive")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } } }
         }.frame(idealWidth: 480, idealHeight: 420)
