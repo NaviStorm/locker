@@ -9,6 +9,9 @@ struct LibraryScreen: View {
     @State private var folderName = ""
     @State private var category = ""
     @State private var selection: UUID?
+    #if os(macOS)
+    @State private var showSidebar = true
+    #endif
     @State private var settings = false
     @State private var importer = false
     @State private var archiveSelection: SelectedImport?
@@ -54,17 +57,7 @@ struct LibraryScreen: View {
             if !filtered.isEmpty {
                 Section("Documents") {
                     ForEach(filtered) { item in
-                        NavigationLink(value: item.id) {
-                            HStack(spacing: 12) {
-                                DocumentGlyph(name: item.labels.name)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.labels.name).font(.body.weight(.medium)).lineLimit(2)
-                                    Text([item.labels.category, item.size.formatted(.byteCount(style: .file))]
-                                        .filter { !$0.isEmpty }.joined(separator: " · "))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }.padding(.vertical, 3)
-                        }
+                        documentLink(item, compact: compact)
                         .contextMenu { documentActions(for: item) }
                     }
                 }
@@ -121,6 +114,31 @@ struct LibraryScreen: View {
         #endif
     }
 
+    @ViewBuilder private func documentLink(_ item: ListedDocument, compact: Bool) -> some View {
+        #if os(macOS)
+        if compact {
+            NavigationLink(value: item.id) { documentRow(item) }
+        } else {
+            documentRow(item).frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle()).tag(item.id)
+        }
+        #else
+        NavigationLink(value: item.id) { documentRow(item) }
+        #endif
+    }
+
+    private func documentRow(_ item: ListedDocument) -> some View {
+        HStack(spacing: 12) {
+            DocumentGlyph(name: item.labels.name)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.labels.name).font(.body.weight(.medium)).lineLimit(2)
+                Text([item.labels.category, item.size.formatted(.byteCount(style: .file))]
+                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(.vertical, 3)
+    }
+
     private func documentView(_ item: ListedDocument) -> some View {
         DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
             versionParent = item.id
@@ -129,22 +147,34 @@ struct LibraryScreen: View {
     }
 
     private var browser: some View {
-        NavigationSplitView {
-            documentList()
-                #if os(macOS)
-                .frame(minWidth: 210)
-                .navigationSplitViewColumnWidth(min: 210, ideal: 270, max: 360)
-                #endif
-        } detail: {
-            if let item = selectedDocument {
-                documentView(item)
-            } else {
-                VaultOverview(title: folder.isEmpty ? model.vaultTitle : folder,
-                              provider: model.configuration.provider.rawValue,
-                              documents: filtered,
-                              folderCount: folder.isEmpty ? model.library.folders.count : nil,
-                              open: selectVersion)
+        #if os(macOS)
+        HSplitView {
+            if showSidebar {
+                documentList()
+                    .frame(minWidth: 210, idealWidth: 270, maxWidth: 360)
             }
+            detail.frame(minWidth: 250, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button(showSidebar ? "Masquer la barre latérale" : "Afficher la barre latérale",
+                       systemImage: "sidebar.leading") { showSidebar.toggle() }
+            }
+        }
+        #else
+        NavigationSplitView { documentList() } detail: { detail }
+        #endif
+    }
+
+    @ViewBuilder private var detail: some View {
+        if let item = selectedDocument {
+            documentView(item)
+        } else {
+            VaultOverview(title: folder.isEmpty ? model.vaultTitle : folder,
+                          provider: model.configuration.provider.rawValue,
+                          documents: filtered,
+                          folderCount: folder.isEmpty ? model.library.folders.count : nil,
+                          open: selectVersion)
         }
     }
 
