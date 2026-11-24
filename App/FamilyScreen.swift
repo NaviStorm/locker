@@ -2,6 +2,10 @@ import SwiftUI
 
 struct FamilyScreen: View {
     let model: LockerModel
+    private enum Route { case invite, join }
+    @State private var route: Route?
+    @State private var canStart = false
+    @State private var hasCloudInvitation = false
     @State private var members: [Member] = []
     @State private var principal = ""
     @State private var mine: PublicIdentity?
@@ -27,50 +31,76 @@ struct FamilyScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                if members.isEmpty {
-                    Section("Coffre familial") {
-                        Button("Créer un coffre familial ici") { run { try await $0.createFamily() } }
-                        Text("La création et l’adhésion utilisent un coffre local vide. Chaque participant conserve son propre compte.")
-                    }
-                } else {
-                    Section("Appareils autorisés") {
-                        if justJoined { Label("Invitation acceptée. Ce coffre est maintenant partagé.", systemImage: "checkmark.circle") }
-                        ForEach(members, id: \.card.fingerprint) { member in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(member.card.fingerprint.prefix(16)).font(.system(.body, design: .monospaced))
-                                    Text(member.role.rawValue + " · " + (member.documents.map { "\($0.count) document(s)" } ?? "Tout le coffre"))
-                                        .font(.caption)
+                if let mine {
+                    if members.isEmpty {
+                        if canStart {
+                            if route == nil {
+                                Section("Que souhaitez-vous faire ?") {
+                                    Button("Inviter un proche") { route = .invite }
+                                    Button("Rejoindre le coffre d’un proche") { route = .join }
                                 }
-                                Spacer()
-                                if isAdmin, member.card.fingerprint != principal {
-                                    Button("Révoquer", role: .destructive) { revoke = member }
+                            } else {
+                                Button("Changer de parcours") { route = nil }
+                                if route == .invite {
+                                    Section("Créer le coffre à partager") {
+                                        Text("Ce coffre vide deviendra le coffre familial. Vous pourrez y importer les documents à partager.")
+                                        Button("Créer le coffre familial") { run { try await $0.createFamily() } }
+                                    }
+                                } else {
+                                    Section("1. Envoyer ma carte au propriétaire") {
+                                        Text("Envoyez votre carte depuis cet appareil. Le propriétaire l’utilisera pour préparer votre invitation.")
+                                        deviceCard(mine)
+                                    }
+                                }
+                            }
+                        } else {
+                            Section("Commencer dans un coffre vide") {
+                                Text("Le partage familial démarre dans un coffre local vide. Créez un coffre séparé, conservez son code de récupération, puis rouvrez Réglages du coffre → Partage familial.")
+                                Button("Créer un coffre séparé pour le partage") {
+                                    model.lock()
+                                    model.open(.create, newSlot: true)
                                 }
                             }
                         }
-                        if isAdmin { Toggle("Rechiffrer les fichiers locaux à la révocation", isOn: $reencrypt) }
+                    } else {
+                        Section(isAdmin ? "Partager ce coffre" : "Coffre familial rejoint") {
+                            if justJoined { Label("Invitation acceptée", systemImage: "checkmark.circle") }
+                            if model.configuration.provider == .local {
+                                if isAdmin || hasCloudInvitation {
+                                    Button("Utiliser iCloud pour ce coffre") {
+                                        run { _ in try await model.configure(ProviderSettings(provider: .cloud), credential: nil) }
+                                    }
+                                }
+                                Text(isAdmin
+                                    ? "Pour partager à distance, choisissez iCloud ici ou enregistrez Dropbox dans les réglages du coffre."
+                                    : "Choisissez le même fournisseur que le propriétaire avec votre propre compte pour recevoir les documents.")
+                            } else {
+                                LabeledContent("Synchronisation", value: model.configuration.provider.rawValue)
+                            }
+                        }
                     }
-                }
-                Section("Carte publique de cet appareil") {
-                    if let mine {
-                        Text(mine.fingerprint).font(.system(.caption, design: .monospaced))
-                        ShareLink("Envoyer ma carte publique", item: mine.card)
-                    }
-                }
+                } else if problem.isEmpty { ProgressView() }
                 if isAdmin {
-                    Section("Vérification sur un second canal") {
+                    Section("1. Vérifier la carte du proche") {
+                        Text("Sur son appareil, votre proche choisit Partage familial → Rejoindre le coffre d’un proche et vous envoie sa carte. Collez-la ici.")
+                        PasteButton(payloadType: String.self) { values in
+                            if let card = values.first { verificationBinding(\.card).wrappedValue = card }
+                        }
                         TextField("Carte publique du correspondant", text: verificationBinding(\.card), axis: .vertical)
                             .autocorrectionDisabled()
                         if let peer = verification.peer {
                             Text(peer.fingerprint).font(.system(.caption, design: .monospaced))
-                            Toggle("J’ai comparé cette empreinte avec le correspondant", isOn: verificationBinding(\.isConfirmed))
+                            Toggle("J’ai comparé cette empreinte avec mon proche, en personne ou par téléphone", isOn: verificationBinding(\.isConfirmed))
+                        }
+                        if !verification.card.isEmpty && verification.peer == nil {
+                            Text("Carte illisible. Demandez le texte complet envoyé avec « Envoyer ma carte publique ».")
                         }
                         if let verificationProblem { Text(verificationProblem).foregroundStyle(.red) }
                         else if verification.isConfirmed {
                             Text("Vérification mémorisée dans ce coffre sur cet appareil.").font(.footnote)
                         }
                     }
-                    Section("Inviter ou modifier les droits") {
+                    Section("2. Choisir les documents et les droits") {
                         Picker("Permission", selection: $role) {
                             ForEach(FamilyRole.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                         }
@@ -88,25 +118,41 @@ struct FamilyScreen: View {
                             Toggle("Le destinataire a déjà accès au dossier ou à la zone", isOn: $existingAccess)
                             if !existingAccess { TextField("Adresse du compte du destinataire", text: $email) }
                         }
-                        Button("Autoriser et préparer l’invitation") {
-                            guard verificationProblem == nil, verification.isConfirmed, let peer = verification.peer else { return }
+                    }
+                    Section("3. Envoyer l’invitation") {
+                        if let missing = invitationHint { Text(missing).font(.footnote) }
+                        Button("Préparer l’invitation") {
+                            guard invitationHint == nil, let peer = verification.peer else { return }
                             run { store in
                                 let scope = restricted && role != .admin ? chosen : nil
                                 try await store.changeMembership(card: peer, role: role, scope: scope)
                                 if existingAccess { issued = try await store.familyTicket(for: peer) }
                                 else { issued = try await store.issueTicket(to: peer, email: email) }
                             }
-                        }.disabled(verificationProblem != nil || !verification.isConfirmed || (restricted && role != .admin && chosen.isEmpty))
-                        if !issued.isEmpty { ShareLink("Transmettre l’invitation chiffrée", item: issued) }
+                        }.disabled(invitationHint != nil)
+                        if !issued.isEmpty, let mine {
+                            ShareLink("Envoyer l’invitation à mon proche", item: issued)
+                            Text("Demandez à votre proche de coller l’invitation dans Locker, puis de comparer votre empreinte avec vous.")
+                            fingerprint(mine)
+                        }
                     }
-                } else if members.isEmpty {
-                    Section("Rejoindre un coffre familial") {
-                        TextField("Invitation chiffrée", text: $joinDraft.ticket, axis: .vertical)
+                } else if members.isEmpty && canStart && route == .join {
+                    Section("2. Accepter l’invitation du propriétaire") {
+                        PasteButton(payloadType: String.self) { values in
+                            if let ticket = values.first { joinDraft.pasteInvitation(ticket) }
+                        }
+                        TextField("Coller l’invitation reçue", text: Binding(get: { joinDraft.ticket }, set: { joinDraft.pasteInvitation($0) }), axis: .vertical)
                             .lineLimit(1...4).autocorrectionDisabled()
-                        TextField("Carte publique du propriétaire", text: $joinDraft.card, axis: .vertical)
-                            .lineLimit(1...3).autocorrectionDisabled()
+                        if joinDraft.owner == nil && !joinDraft.ticket.isEmpty {
+                            TextField("Carte du propriétaire (ancienne invitation)", text: $joinDraft.card, axis: .vertical)
+                                .lineLimit(1...3).autocorrectionDisabled()
+                        } else if joinDraft.owner != nil {
+                            DisclosureGroup("Carte du propriétaire") {
+                                TextField("Carte publique", text: $joinDraft.card, axis: .vertical).autocorrectionDisabled()
+                            }
+                        }
                         if let owner = joinDraft.owner {
-                            Text(owner.fingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                            fingerprint(owner)
                             Toggle("J’ai comparé cette empreinte avec le propriétaire", isOn: $joinDraft.fingerprintConfirmed)
                         }
                         if let hint = joinDraft.nextStep { Text(hint).font(.footnote) }
@@ -125,23 +171,50 @@ struct FamilyScreen: View {
                         if joinDraft == savedDraft && joinDraft != FamilyJoinDraft() {
                             Text("Brouillon enregistré dans ce coffre sur cet appareil.").font(.footnote)
                         }
-                        if savedDraft != nil && !problem.isEmpty { Text(problem).foregroundStyle(.red) }
                     }.disabled(savedDraft == nil)
                 }
-                Section("Secours du propriétaire") {
-                    if isAdmin {
-                        Button("Préparer le kit de secours chiffré") { run { kit = try await $0.makeRescueKit() } }
-                        if !kit.isEmpty { ShareLink("Conserver le kit de secours", item: kit) }
-                    } else if members.isEmpty {
-                        TextField("Kit associé au code de récupération", text: $rescue, axis: .vertical)
-                        Button("Restaurer mon autorité de secours") { run { try await $0.restoreRescueKit(rescue) } }
-                            .disabled(rescue.isEmpty)
+                if !members.isEmpty {
+                    DisclosureGroup("Gérer les appareils autorisés") {
+                        ForEach(members, id: \.card.fingerprint) { member in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(member.card.fingerprint.prefix(16)).font(.system(.body, design: .monospaced))
+                                    Text(member.role.rawValue + " · " + (member.documents.map { "\($0.count) document(s)" } ?? "Tout le coffre"))
+                                        .font(.caption)
+                                }
+                                Spacer()
+                                if isAdmin, member.card.fingerprint != principal {
+                                    Button("Révoquer", role: .destructive) { revoke = member }
+                                }
+                            }
+                        }
+                        if isAdmin { Toggle("Rechiffrer les fichiers locaux à la révocation", isOn: $reencrypt) }
+                    }
+                    if let mine {
+                        DisclosureGroup("Ma carte publique") { deviceCard(mine) }
                     }
                 }
-                if !problem.isEmpty && (!members.isEmpty || savedDraft == nil) { Text(problem).foregroundStyle(.red) }
+                if isAdmin || members.isEmpty {
+                    DisclosureGroup("Secours du propriétaire") {
+                        if isAdmin {
+                            Button("Préparer le kit de secours chiffré") { run { kit = try await $0.makeRescueKit() } }
+                            if !kit.isEmpty { ShareLink("Conserver le kit de secours", item: kit) }
+                        } else {
+                            TextField("Kit associé au code de récupération", text: $rescue, axis: .vertical)
+                            Button("Restaurer mon autorité de secours") { run { try await $0.restoreRescueKit(rescue) } }
+                                .disabled(rescue.isEmpty)
+                        }
+                    }
+                }
+                if !problem.isEmpty { Text(problem).foregroundStyle(.red) }
                 if working { ProgressView() }
             }
             .vaultFormStyle().navigationTitle("Partage familial")
+            .onChange(of: role) { issued = "" }
+            .onChange(of: restricted) { issued = "" }
+            .onChange(of: chosen) { issued = "" }
+            .onChange(of: email) { issued = "" }
+            .onChange(of: existingAccess) { issued = "" }
             .modifier(VaultDismissToolbar())
             .disabled(working)
             .confirmationDialog("Retirer l’autorisation de cet appareil ?", isPresented: Binding(get: { revoke != nil },
@@ -157,9 +230,29 @@ struct FamilyScreen: View {
                 let draft = try await store.familyJoinDraft()
                 joinDraft = draft
                 savedDraft = draft
+                if draft != FamilyJoinDraft() { route = .join }
                 try await refresh(store)
             } catch { problem = error.localizedDescription }
         }
+    }
+
+    private var invitationHint: String? {
+        if verificationProblem != nil || !verification.isConfirmed { return "Vérifiez d’abord la carte de votre proche à l’étape 1." }
+        if verification.peer == mine { return "Collez la carte de l’appareil de votre proche à l’étape 1." }
+        if restricted && role != .admin && chosen.isEmpty { return "Sélectionnez au moins un document à l’étape 2." }
+        if [.cloud, .dropbox].contains(model.configuration.provider), !existingAccess,
+           email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Indiquez l’adresse du compte de votre proche à l’étape 2." }
+        return nil
+    }
+
+    private func fingerprint(_ identity: PublicIdentity) -> some View {
+        Text(identity.fingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+    }
+
+    @ViewBuilder private func deviceCard(_ identity: PublicIdentity) -> some View {
+        ShareLink("Envoyer ma carte publique", item: identity.card)
+        Text("Empreinte à comparer en personne ou par téléphone").font(.caption)
+        fingerprint(identity)
     }
 
     private func verificationBinding<Value>(_ key: WritableKeyPath<FamilyPeerVerification, Value>) -> Binding<Value> {
@@ -191,8 +284,11 @@ struct FamilyScreen: View {
     }
 
     private func refresh(_ store: VaultStore) async throws {
+        canStart = try await store.canStartFamily()
         mine = try await store.publicIdentity()
-        principal = await store.family?.principal ?? ""
+        let family = await store.family
+        principal = family?.principal ?? ""
+        hasCloudInvitation = family?.cloudURL != nil
         members = try await store.members()
         model.familyMode = !members.isEmpty
         if isAdmin {

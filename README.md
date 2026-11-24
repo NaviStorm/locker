@@ -44,10 +44,10 @@ Pour le NAS, saisir son adresse accessible sur le réseau local avec un certific
 
 ## Inviter un membre de la famille
 
-1. Chaque personne crée son propre coffre local vide. Le propriétaire ouvre **Réglages → Partage familial → Créer un coffre familial ici**, puis choisit le fournisseur et importe les documents.
-2. Le destinataire transmet sa **carte publique**. Comparer l’empreinte complète par téléphone ou en personne. Le propriétaire transmet aussi sa propre carte pour que le destinataire puisse vérifier sa signature.
-3. Le propriétaire choisit le rôle et les documents. Pour iCloud ou Dropbox, il indique l’adresse du compte personnel du destinataire. **Autoriser et préparer l’invitation** accorde l’accès au transport et peut déclencher une notification du fournisseur. Envoyer ensuite l’invitation chiffrée avec le bouton de partage.
-4. Dans son coffre vide, le destinataire vérifie la carte du propriétaire, accepte l’invitation, puis configure le même fournisseur avec **son propre compte**. La première synchronisation exige une connexion. Les versions autorisées reçues restent consultables hors ligne.
+1. Dans **Réglages du coffre → Partage familial**, le propriétaire choisit **Inviter un proche → Créer le coffre familial** dans un coffre local vide. Il enregistre ensuite iCloud ou Dropbox dans les réglages de ce coffre pour partager entre réseaux, et y importe les documents.
+2. Dans son propre coffre local vide, le proche choisit **Rejoindre le coffre d’un proche → Envoyer ma carte publique**. Le propriétaire colle la carte reçue et compare l’empreinte avec le proche par téléphone ou en personne.
+3. Le propriétaire choisit les documents et les droits, indique l’adresse du compte iCloud ou Dropbox du proche, puis choisit **Préparer l’invitation → Envoyer l’invitation à mon proche**.
+4. Le proche colle l’invitation dans Locker. La carte du propriétaire est incluse dans les nouvelles invitations. Après comparaison de l’empreinte par téléphone ou en personne, il accepte et enregistre le même fournisseur avec son propre compte. Pour Dropbox, il accepte également le partage du dossier dans Dropbox.
 5. Le propriétaire conserve le **kit de secours chiffré** séparément du code de récupération. Après perte des appareils, récupérer d’abord le coffre personnel avec le code, restaurer le kit dans **Partage familial**, puis reconnecter le fournisseur. Les deux éléments et une copie des données permettent de retrouver l’autorité de secours sans l’ancien Secure Enclave.
 
 Pour retirer un appareil familial, sélectionner son empreinte dans **Appareils autorisés**, puis **Révoquer**. La rotation des clés de partage est systématique. Le rechiffrement des contenus locaux est proposé et activé par défaut. Une copie déjà téléchargée ou exportée peut subsister.

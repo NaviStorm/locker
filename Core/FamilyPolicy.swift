@@ -104,14 +104,47 @@ struct FamilyJoinDraft: Codable, Equatable {
         set { verifiedFingerprint = newValue ? owner?.fingerprint : nil }
     }
 
+    mutating func pasteInvitation(_ text: String) {
+        ticket = text
+        guard let data = Data(base64Encoded: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let message = try? JSONDecoder().decode(FamilyInvitationMessage.self, from: data),
+              (try? message.sender.validate()) != nil,
+              (try? message.signed.verified(SealedGrant.self, by: message.sender, domain: "Locker-family-invite-1")) != nil
+        else { return }
+        if owner != message.sender { card = message.sender.card }
+    }
+
     var nextStep: String? {
         let text = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { return "Collez l’invitation envoyée par le propriétaire avec « Transmettre l’invitation chiffrée »." }
+        if text.isEmpty { return "Collez le message reçu après avoir envoyé votre carte au propriétaire." }
         guard let bytes = Data(base64Encoded: text), (try? JSONDecoder().decode(SignedObject.self, from: bytes)) != nil
         else { return "L’invitation est illisible. Recopiez le texte complet de l’invitation chiffrée." }
         if card.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Collez aussi la carte publique du propriétaire." }
         guard owner != nil else { return "La carte publique est illisible. Demandez au propriétaire de vous renvoyer sa carte." }
         return fingerprintConfirmed ? nil : "Comparez l’empreinte avec le propriétaire, de vive voix, puis cochez la confirmation."
+    }
+}
+
+// Keep the signed envelope readable by older versions of Locker.
+private struct FamilyInvitationMessage: Codable {
+    enum CodingKeys: String, CodingKey { case sender }
+    let sender: PublicIdentity
+    let signed: SignedObject
+
+    init(sender: PublicIdentity, signed: SignedObject) {
+        self.sender = sender
+        self.signed = signed
+    }
+
+    init(from decoder: Decoder) throws {
+        sender = try decoder.container(keyedBy: CodingKeys.self).decode(PublicIdentity.self, forKey: .sender)
+        signed = try SignedObject(from: decoder)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try signed.encode(to: encoder)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sender, forKey: .sender)
     }
 }
 
@@ -126,7 +159,8 @@ struct FamilyInvitation: Codable {
               policy.member(recipient.fingerprint) != nil else { throw FamilyError.denied }
         let invitation = FamilyInvitation(tip: state.tip, cloudURL: state.cloudURL, target: recipient.fingerprint)
         let grant = try SealedGrant(JSONEncoder().encode(invitation), for: recipient)
-        return try JSONEncoder().encode(SignedObject(grant, by: admin, domain: "Locker-family-invite-1")).base64EncodedString()
+        let signed = try SignedObject(grant, by: admin, domain: "Locker-family-invite-1")
+        return try JSONEncoder().encode(FamilyInvitationMessage(sender: admin.card, signed: signed)).base64EncodedString()
     }
 
     static func open(_ ticket: String, by identity: DeviceIdentity, trustedAdmin: PublicIdentity) throws -> FamilyLocal {

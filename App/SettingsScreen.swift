@@ -128,6 +128,9 @@ struct SettingsScreen: View {
                     }
                 }
             }
+            .onChange(of: model.configuration) { _, config in
+                if family { draft = config }
+            }
             .onChange(of: draft.provider) { _, provider in
                 if provider == .dropbox && draft.appKey.isEmpty { draft.appKey = Self.dropboxKey }
             }

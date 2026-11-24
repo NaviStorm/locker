@@ -8,8 +8,13 @@ extension VaultStore {
         try FamilyEvent.authorize(member, action: action, scope: scope)
     }
 
+    func canStartFamily() throws -> Bool {
+        try gate.check()
+        return try family == nil && entries.isEmpty && settings().provider == .local
+    }
+
     func createFamily(using device: DeviceIdentity) throws {
-        guard family == nil, entries.isEmpty, try settings().provider == .local else { throw FamilyError.nonempty }
+        guard try canStartFamily() else { throw FamilyError.nonempty }
         let owner = Member(card: device.card, role: .admin, documents: nil)
         let rescue = try Member(card: DeviceIdentity(rescue: keys).card, role: .admin, documents: nil)
         let tip = try Policy.issue([owner, rescue], prior: nil, by: device)
@@ -20,7 +25,7 @@ extension VaultStore {
     func createFamily() throws { try createFamily(using: identity()) }
 
     func joinFamily(_ ticket: String, from admin: PublicIdentity, using device: DeviceIdentity) throws {
-        guard family == nil, entries.isEmpty, try settings().provider == .local else { throw FamilyError.nonempty }
+        guard try canStartFamily() else { throw FamilyError.nonempty }
         let state = try FamilyInvitation.open(ticket, by: device, trustedAdmin: admin)
         try commit(entries, pending, family: state)
     }

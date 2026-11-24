@@ -122,6 +122,25 @@ final class FamilyTests: VaultTestCase {
         XCTAssertNotNil(draft.nextStep)
         draft.ticket = "  \n"
         XCTAssertNotNil(draft.nextStep)
+        draft.pasteInvitation(ticket)
+        XCTAssertEqual(draft.owner, owner.card)
+        XCTAssertFalse(draft.fingerprintConfirmed)
+        XCTAssertNotNil(draft.nextStep)
+        var forged = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(Data(base64Encoded: ticket))) as? [String: Any])
+        forged["sender"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(reader.card))
+        var tampered = FamilyJoinDraft()
+        tampered.pasteInvitation(try JSONSerialization.data(withJSONObject: forged).base64EncodedString())
+        XCTAssertNil(tampered.owner)
+        XCTAssertNotNil(tampered.nextStep)
+        // An older invitation still works when the owner sends their public card separately.
+        let encoded = try XCTUnwrap(Data(base64Encoded: ticket))
+        let signed = try JSONDecoder().decode(SignedObject.self, from: encoded)
+        let legacy = try JSONEncoder().encode(signed).base64EncodedString()
+        draft = FamilyJoinDraft()
+        draft.pasteInvitation(legacy)
+        XCTAssertNil(draft.owner)
+        let legacyFamily = try FamilyInvitation.open(legacy, by: reader, trustedAdmin: owner.card)
+        XCTAssertEqual(legacyFamily.principal, reader.card.fingerprint)
         draft.ticket = ticket
         XCTAssertNotNil(draft.nextStep)
         draft.card = "carte incomplète"
