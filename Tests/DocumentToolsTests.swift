@@ -127,6 +127,62 @@ final class DocumentToolsTests: VaultTestCase {
         XCTAssertEqual(list.count, 2)
     }
 
+    func testWatermarkKeepsA4ContentAtItsOriginalScale() async throws {
+        let bytes = NSMutableData()
+        var paper = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let writer = try XCTUnwrap(CGContext(consumer: XCTUnwrap(CGDataConsumer(data: bytes)), mediaBox: &paper, nil))
+        writer.beginPDFPage(nil)
+        writer.setFillColor(gray: 0, alpha: 1)
+        // Four registration marks near the page edges, away from the central watermark.
+        for x in [35, 535] {
+            for y in [55, 755] { writer.fill(CGRect(x: x, y: y, width: 20, height: 20)) }
+        }
+        writer.endPDFPage()
+        writer.closePDF()
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        _ = try await store.importData(bytes as Data, name: "Echelle.pdf")
+        let list = try await store.list()
+        let marked = try await store.watermarkedCopy(of: XCTUnwrap(list.first), message: "TEST")
+        let result = try XCTUnwrap(CGPDFDocument(XCTUnwrap(CGDataProvider(data: marked as CFData))))
+        let page = try XCTUnwrap(result.page(at: 1))
+        XCTAssertEqual(page.getBoxRect(.mediaBox), paper)
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 595, height: 842, bitsPerComponent: 8, bytesPerRow: 595,
+                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue))
+        ctx.drawPDFPage(page)
+        let pixels = try XCTUnwrap(ctx.data).assumingMemoryBound(to: UInt8.self)
+        for x in [45, 545] {
+            for y in [65, 765] { XCTAssertLessThan(pixels[(841 - y) * 595 + x], 30) }
+        }
+    }
+
+    func testLargeOriginalIsPrintableAndContainsExactlyTheStoredBytes() async throws {
+        let root = location("coffre")
+        let store = try VaultStore(root: root, keys: VaultKeys(), create: true)
+        var original = try pdf()
+        let xref = try XCTUnwrap(original.range(of: Data("startxref".utf8), options: .backwards))
+        original.insert(contentsOf: Data(repeating: 32, count: 33 * 1024 * 1024), at: xref.lowerBound)
+        let id = try await store.importData(original, name: "Original.pdf")
+        let files = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+        let result = try await store.originalForOutput(id)
+        XCTAssertEqual(result, original)
+        XCTAssertEqual(PDFDocument(data: result)?.pageCount, 2)
+        #if !SWIFT_PACKAGE
+        if #available(iOS 18.2, macOS 15.2, *) {
+            let items = try await store.list()
+            let share = OriginalDocumentShare(store: store, item: try XCTUnwrap(items.first))
+            XCTAssertEqual(share.exportedContentTypes().first, .pdf)
+            let shared = try await share.exported(as: .pdf)
+            XCTAssertEqual(shared, original)
+        }
+        #endif
+        #if os(iOS)
+        XCTAssertTrue(UIPrintInteractionController.canPrint(result))
+        #endif
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), files)
+        store.gate.revoke()
+        do { _ = try await store.originalForOutput(id); XCTFail() } catch VaultError.locked {}
+    }
+
     func testWatermarkedPDFPreservesOpaqueAnnotations() async throws {
         let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
         let doc = try XCTUnwrap(PDFDocument(data: pdf()))

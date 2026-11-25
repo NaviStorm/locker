@@ -190,6 +190,14 @@ final class AppSessionTests: VaultTestCase {
         try await waitFor { fixture.presentedViewController != nil }
         state.unlocked = false
         try await waitFor { fixture.presentedViewController == nil && pdf(in: fixture.view) == nil }
+        // The watermark preview is inserted with full screen already requested.
+        state.unlocked = true
+        try await waitFor {
+            guard let modal = fixture.presentedViewController, let reader = pdf(in: modal.view) else { return false }
+            return reader.bounds.width > initialWidth + 50
+        }
+        state.expanded = false
+        try await waitFor { fixture.presentedViewController == nil && pdf(in: fixture.view) != nil }
     }
 
     @MainActor func testDuoFinderPlacesRootDocumentsBesideFolders() async throws {

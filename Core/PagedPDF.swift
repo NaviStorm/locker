@@ -138,7 +138,12 @@ actor PagedPDF {
         let bounds = CGRect(x: 0, y: 0, width: width, height: height)
         context.setFillColor(gray: 1, alpha: 1)
         context.fill(bounds)
-        context.concatenate(page.getDrawingTransform(.cropBox, rect: bounds, rotate: 0, preserveAspectRatio: true))
+        // CGPDFPage's fitting transform only scales down. Map page points to bitmap
+        // pixels separately so an A4 page fills the raster at resolutions above 72 dpi.
+        let pageSize = CGSize(width: rotated ? box.height : box.width, height: rotated ? box.width : box.height)
+        context.scaleBy(x: bounds.width / pageSize.width, y: bounds.height / pageSize.height)
+        context.concatenate(page.getDrawingTransform(.cropBox, rect: CGRect(origin: .zero, size: pageSize),
+                                                     rotate: 0, preserveAspectRatio: true))
         context.drawPDFPage(page)
         try source.gate.check()
         guard !source.failed, let image = context.makeImage() else { throw VaultError.damaged }

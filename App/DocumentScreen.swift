@@ -8,7 +8,8 @@ struct DocumentScreen<Actions: View>: View {
     let select: (UUID) -> Void
     let addVersion: () -> Void
     let actions: Actions
-    @State private var bytes: Data?
+    @State private var printer = DocumentPrinter()
+    @State private var preparingPrint = false
     @State private var editing = false
     @State private var editingPhoto = false
     @State private var showVersions = false
@@ -18,26 +19,27 @@ struct DocumentScreen<Actions: View>: View {
     @State private var showHistory = false
 
     var body: some View {
-        StoredDocumentPreview(model: model, item: item) { bytes = $0 }
+        StoredDocumentPreview(model: model, item: item)
+        .background(DocumentPrintAnchor(printer: printer))
         .toolbar {
             ToolbarItemGroup {
                 if item.isPhoto {
                     Button("Modifier la photo", systemImage: "slider.horizontal.3") { editingPhoto = true }
                         .help("Modifier la photo")
                 }
-                if bytes != nil || item.supportsWatermark {
+                if let store = model.store {
                     Menu {
-                        if let bytes {
-                            ShareLink(item: SharedBytes(bytes: bytes, name: item.labels.name),
-                                      preview: SharePreview(item.labels.name)) {
-                                Label("Partager une copie", systemImage: "square.and.arrow.up")
-                            }
+                        ShareLink(item: OriginalDocumentShare(store: store, item: item),
+                                  preview: SharePreview(item.labels.name)) {
+                            Label("Partager l’original", systemImage: "square.and.arrow.up")
                         }
                         if item.supportsWatermark {
+                            Button("Imprimer l’original…", systemImage: "printer") { preparingPrint = true }
+                                .disabled(preparingPrint)
                             Button("Partager avec un filigrane…", systemImage: "textformat") { watermarking = true }
                         }
                     } label: { Label("Partager", systemImage: "square.and.arrow.up") }
-                    .help("Partager le document")
+                    .help("Partager ou imprimer le document")
                 }
                 Menu {
                     actions
@@ -50,6 +52,13 @@ struct DocumentScreen<Actions: View>: View {
                         model.perform { store in history = try await store.labelHistory(item.id); showHistory = true }
                     }
                 } label: { Label("Actions", systemImage: "ellipsis.circle") }
+            }
+        }
+        .task(id: preparingPrint) {
+            guard preparingPrint, let store = model.store else { return }
+            defer { preparingPrint = false }
+            await printer.presentOriginal(item, from: store) { error in
+                if model.store === store { model.problem = error.localizedDescription }
             }
         }
         .lockerPanel(isPresented: $watermarking) {
@@ -105,7 +114,6 @@ private extension ListedDocument {
 private struct StoredDocumentPreview: View {
     let model: LockerModel
     let item: ListedDocument
-    var onLoad: ((Data) -> Void)? = nil
     @State private var bytes: Data?
     @State private var largePhoto: CGImage?
     @State private var pdf: PagedPDF?
@@ -160,7 +168,6 @@ private struct StoredDocumentPreview: View {
                 try store.gate.check()
                 try Task.checkCancellation()
                 bytes = loaded
-                onLoad?(loaded)
             } catch { notice = error.localizedDescription }
         }
     }
@@ -291,14 +298,6 @@ private struct VersionHistoryScreen: View {
                 if model.store === store { problem = error.localizedDescription }
             }
         }
-    }
-}
-
-private struct SharedBytes: Transferable {
-    let bytes: Data
-    let name: String
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .data) { $0.bytes }.suggestedFileName { $0.name }
     }
 }
 

@@ -88,8 +88,16 @@ extension ExpandableDocumentReader: UIViewControllerRepresentable {
 #else
 extension ExpandableDocumentReader: NSViewRepresentable {
 
-    func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+    final class Container: NSView {
+        var onAttach: (() -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { onAttach?() }
+        }
+    }
+
+    func makeNSView(context: Context) -> Container {
+        let container = Container()
         let host = NSHostingView(rootView: reader)
         host.frame = container.bounds
         host.autoresizingMask = [.width, .height]
@@ -104,21 +112,26 @@ extension ExpandableDocumentReader: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func updateNSView(_ container: NSView, context: Context) {
+    func updateNSView(_ container: Container, context: Context) {
         guard let host = context.coordinator.host else { return }
         host.rootView = reader
-        if expanded, !host.isInFullScreenMode {
-            guard let screen = container.window?.screen,
-                  host.enterFullScreenMode(screen, withOptions: [.fullScreenModeAllScreens: false]) else {
-                DispatchQueue.main.async { expanded = false }
-                return
+        container.onAttach = { [weak container, weak host] in
+            DispatchQueue.main.async {
+                guard let container, container.onAttach != nil, let screen = container.window?.screen, let host else { return }
+                if expanded, !host.isInFullScreenMode {
+                    if !host.enterFullScreenMode(screen, withOptions: [.fullScreenModeAllScreens: false]) {
+                        expanded = false
+                    }
+                } else if !expanded, host.isInFullScreenMode {
+                    host.exitFullScreenMode(options: nil)
+                }
             }
-        } else if !expanded, host.isInFullScreenMode {
-            host.exitFullScreenMode(options: nil)
         }
+        container.onAttach?()
     }
 
-    static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
+    static func dismantleNSView(_ container: Container, coordinator: Coordinator) {
+        container.onAttach = nil
         if let host = coordinator.host, host.isInFullScreenMode { host.exitFullScreenMode(options: nil) }
     }
 }
