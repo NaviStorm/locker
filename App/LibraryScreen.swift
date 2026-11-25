@@ -154,7 +154,7 @@ struct LibraryScreen: View {
             ToolbarItemGroup {
                 Menu {
                     importButton
-                    if ScanScreen.supported {
+                    if CaptureSource.document.available {
                         Button("Numériser", systemImage: "document.viewfinder") { scanner = true }
                     }
                 } label: { Label("Ajouter", systemImage: "plus") }
@@ -424,13 +424,21 @@ struct LibraryScreen: View {
         }
         .lockerPanel(isPresented: $settings) { SettingsScreen(model: model) }
         .sheet(isPresented: $scanner) {
-            ScanScreen { result in
-                scanner = false
-                switch result {
-                case let .success(scan): model.perform { _ = try await $0.importData(scan.bytes, name: scan.name, folder: folder) }
-                case let .failure(error): model.problem = error.localizedDescription
-                }
-            } cancel: { scanner = false }
+            #if os(iOS)
+            let source = CaptureSource.document
+            #else
+            let source = CaptureSource.photo
+            #endif
+            if let store = model.store {
+                CaptureScreen(source: source) { result in
+                    guard model.store === store else { return }
+                    scanner = false
+                    switch result {
+                    case let .success(scan): model.perform { _ = try await $0.importData(scan.bytes, name: scan.name, folder: folder) }
+                    case let .failure(error): model.problem = error.localizedDescription
+                    }
+                } cancel: { scanner = false }
+            }
         }
         #if os(iOS)
         .lockerPanel(isPresented: $familySharing) { FamilyScreen(model: model) }
@@ -484,6 +492,7 @@ struct LibraryScreen: View {
                 importButton
                 Button("Photographier un document", systemImage: "camera") { scanner = true }
                     .help("Photographier un document")
+                    .disabled(!CaptureSource.photo.available)
                 Divider()
                 Menu {
                     folderPicker.pickerStyle(.inline)

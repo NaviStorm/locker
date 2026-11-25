@@ -1,6 +1,7 @@
 #if !SWIFT_PACKAGE
 import XCTest
 #if targetEnvironment(simulator)
+import PDFKit
 import LocalAuthentication
 import Security
 import SwiftUI
@@ -428,6 +429,39 @@ final class AppSessionTests: VaultTestCase {
         _ = try await button("Déplacer (2)", in: host)
     }
 
+    @MainActor func testPhotoAndScannedPagesImportIntoChosenFolder() async throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 120), format: format)
+        let images = [UIColor.red, .green].map { color in
+            renderer.image { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 80, height: 120))
+            }
+        }
+        let data = try XCTUnwrap(images[0].pngData())
+        let file = location("Reçu.jpg")
+        try data.write(to: file)
+        let image = try LibraryPhoto(file: file)
+        XCTAssertEqual(image.name, "Reçu.png")
+        XCTAssertEqual(image.bytes, data)
+        try Data([0, 1, 2]).write(to: location("incorrect.png"))
+        XCTAssertThrowsError(try LibraryPhoto(file: location("incorrect.png")))
+
+        let store = try VaultStore(root: location("import-images"), keys: VaultKeys(), create: true)
+        let folder = try await store.createFolder("Factures")
+        let photo = try await store.importData(image.bytes, name: image.name, folder: folder)
+        let pdf = ScanResult.pdf(pageCount: images.count) { images[$0] }
+        let scan = try await store.importData(pdf, name: "Numérisation.pdf", folder: folder)
+        let library = try await store.library()
+        XCTAssertTrue(library.documents(in: "").isEmpty)
+        XCTAssertEqual(Set(library.documents(in: folder).map(\.id)), Set([photo, scan]))
+        let storedPDF = try await store.preview(scan)
+        XCTAssertEqual(PDFDocument(data: storedPDF)?.pageCount, 2)
+        let storedPhoto = try await store.preview(photo)
+        XCTAssertEqual(storedPhoto, data)
+    }
+
     @MainActor func testImportScreenOffersDecompressionBeforeChoosingAFile() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
@@ -436,6 +470,8 @@ final class AppSessionTests: VaultTestCase {
         await withCheckedContinuation { done in
             presenter.present(host, animated: false) { done.resume() }
         }
+        let expected: Set<String> = ["Décompresser une archive…", "Choisir des fichiers…", "Choisir dans la photothèque…",
+                                     "Prendre une photo", "Scanner un document en PDF"]
         var buttons = Set<String>()
         var labels = Set<String>()
         for _ in 0..<40 {
@@ -459,9 +495,9 @@ final class AppSessionTests: VaultTestCase {
                 }
             }
             inspect(host.view)
-            if buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]) { break }
+            if buttons.isSuperset(of: expected) { break }
         }
-        XCTAssertTrue(buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]),
+        XCTAssertTrue(buttons.isSuperset(of: expected),
                       "Éléments affichés : \(labels.sorted())")
         await withCheckedContinuation { done in
             host.dismiss(animated: false) { done.resume() }
