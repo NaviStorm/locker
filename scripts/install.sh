@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+locker_bundle_id=com.tandreuperouges.locker.documents
+
 usage() {
     cat <<'HELP'
 Usage : scripts/install.sh --list
@@ -22,9 +24,31 @@ fail() { printf 'Erreur : %s\n' "$*" >&2; exit 1; }
 iphone() {
     xcrun devicectl list devices --quiet --json-output - |
         /usr/bin/python3 -c '
-import json, sys
+import json, plistlib, subprocess, sys
+
+def usb_id(value):
+    return value.strip().casefold().replace("-", "")
+
+def wired_apple_devices():
+    # CoreDevice may close its developer tunnel while an iPhone is still on USB.
+    try:
+        raw = subprocess.check_output(["/usr/sbin/ioreg", "-a", "-l", "-p", "IOUSB", "-w", "0"])
+        tree = plistlib.loads(raw)
+    except (OSError, subprocess.CalledProcessError, ValueError, plistlib.InvalidFileException):
+        print("Inventaire USB indisponible. Affichage des connexions confirmées par Xcode.", file=sys.stderr)
+        return set()
+    nodes = [tree] if isinstance(tree, dict) else list(tree)
+    identifiers = set()
+    while nodes:
+        node = nodes.pop()
+        nodes.extend(node.get("IORegistryEntryChildren", []))
+        serial = node.get("USB Serial Number")
+        if node.get("idVendor") == 0x05AC and isinstance(serial, str) and serial.strip():
+            identifiers.add(usb_id(serial))
+    return identifiers
 
 mode, selector = sys.argv[1], sys.argv[2].strip().casefold()
+wired = wired_apple_devices()
 phones = []
 for device in json.load(sys.stdin)["result"]["devices"]:
     props = device.get("properties", {})
@@ -33,10 +57,14 @@ for device in json.load(sys.stdin)["result"]["devices"]:
     state = props.get("state") or device.get("deviceProperties", {})
     if hw.get("reality") != "physical" or hw.get("deviceType") != "iPhone":
         continue
-    if conn.get("state", conn.get("tunnelState")) != "connected":
+    udid = hw.get("udid")
+    if not udid:
         continue
-    phones.append((state.get("name", "").strip(), hw["udid"], hw.get("serialNumber") or "",
-                   conn.get("transportType") or ""))
+    on_usb = usb_id(udid) in wired
+    if not on_usb and conn.get("state", conn.get("tunnelState")) != "connected":
+        continue
+    transport = "wired" if on_usb else conn.get("transportType") or ""
+    phones.append((state.get("name", "").strip(), udid, hw.get("serialNumber") or "", transport))
 
 def listing(stream):
     if not phones:
@@ -61,16 +89,16 @@ else:
 verify_signature() {
     local app=$1 extension=$2
     local signer='anchor apple generic and certificate leaf[subject.OU] = "RTMWCLXVLL"'
-    codesign --verify --deep --strict "$app"
-    codesign --verify --strict -R="identifier \"fr.locker.documents\" and $signer" "$app"
-    codesign --verify --strict -R="identifier \"fr.locker.documents.share\" and $signer" "$app/$extension"
+    codesign --verify --deep --strict --verbose=2 "$app" || return 1
+    codesign --verify --strict -R="identifier \"$locker_bundle_id\" and $signer" "$app" || return 1
+    codesign --verify --strict -R="identifier \"$locker_bundle_id.share\" and $signer" "$app/$extension"
 }
 
 install_mac() (
     local source=$1 directory=$2 target stage
     target="$directory/Locker.app"
     if [[ -e "$target" || -L "$target" ]]; then
-        [[ ! -L "$target" && "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist")" == fr.locker.documents ]] ||
+        [[ ! -L "$target" && "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist")" == "$locker_bundle_id" ]] ||
             fail "La destination existe déjà et ne correspond pas à Locker : $target"
     fi
     stage=$(mktemp -d "$directory/.locker-install.XXXXXXXX")
@@ -126,7 +154,9 @@ main() {
     export TMPDIR="$build/tmp"
     if [[ "$mode" == --ios ]]; then
         udid=$(iphone select "$selector")
-        destination="platform=iOS,id=$udid"
+        # Compile the same asset catalogue for every iPhone sharing this build cache.
+        # Only devicectl needs the selected device when installing the verified bundle.
+        destination="generic/platform=iOS"
         app="$build/Build/Products/Release-iphoneos/Locker.app"
         extension="PlugIns/LockerShare.appex"
     else
@@ -139,7 +169,7 @@ main() {
     verify_signature "$app" "$extension"
     if [[ "$mode" == --ios ]]; then
         xcrun devicectl device install app --device "$udid" "$app"
-        xcrun devicectl device info apps --device "$udid" --bundle-id fr.locker.documents
+        xcrun devicectl device info apps --device "$udid" --bundle-id "$locker_bundle_id"
     else
         install_mac "$app" /Applications
     fi

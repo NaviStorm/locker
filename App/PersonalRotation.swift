@@ -2,7 +2,7 @@ import Foundation
 import LocalAuthentication
 
 extension LockerModel {
-    func rotatePersonal() async throws {
+    func rotatePersonal(secret: String = "") async throws {
         guard let source = store, await source.family == nil, !opening else { throw FamilyError.denied }
         let id = UUID().uuidString
         let staging = base.appendingPathComponent("rotation-" + id)
@@ -12,9 +12,15 @@ extension LockerModel {
         opening = true
         defer { auth.invalidate(); gate.revoke(); opening = false }
         let method = authenticationMethod
-        try await method.confirm(using: auth, reason: "Créer une nouvelle clé pour ce coffre")
+        if method.isCustom {
+            let current = DeviceKeychain(account: slot, secret: secret)
+            _ = try await Task.detached { try current.read(context: auth) }.value
+        } else {
+            try await method.confirm(using: auth, reason: "Créer une nouvelle clé pour ce coffre")
+        }
         try source.gate.check()
-        let device = DeviceKeychain(account: id, protectNewKey: requiresAuthentication)
+        let device = DeviceKeychain(account: id, protectNewKey: requiresAuthentication, secret: method.isCustom ? secret : nil,
+                                    newMethod: method.isCustom ? method : nil)
         let target = try await Task.detached {
             try VaultAccess.open(.create, at: staging, device: device, context: auth, gate: gate)
         }.value

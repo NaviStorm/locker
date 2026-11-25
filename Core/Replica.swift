@@ -18,6 +18,7 @@ extension VaultStore {
     func synchronize(with replica: VaultReplica) async throws {
         try gate.check()
         guard family == nil else { throw FamilyError.denied }
+        syncProgress.begin("Inventaire du coffre distant…")
         let remoteIDs = try await replica.identifiers()
         let tags = await (replica as? ObjectReplica)?.documentTags
         let cursor = root.appendingPathComponent("remote-tags.v1")
@@ -25,8 +26,12 @@ extension VaultStore {
         if tags != nil, FileManager.default.fileExists(atPath: cursor.path) {
             previous = try Self.unpack([UUID: String].self, data: Data(contentsOf: cursor), keys: keys, purpose: "remote-tags")
         } else { previous = [:] }
-        for id in remoteIDs.union(entries.keys) {
-            if let tag = tags?[id], !tag.isEmpty, previous[id] == tag, entries[id] != nil, pending[id] == nil { continue }
+        let changed = remoteIDs.union(entries.keys).filter { id in
+            guard let tag = tags?[id], !tag.isEmpty else { return true }
+            return previous[id] != tag || entries[id] == nil || pending[id] != nil
+        }
+        syncProgress.begin("Éléments à synchroniser", total: changed.count)
+        for id in changed {
             var success = false
             for _ in 0..<4 {
                 try gate.check()
@@ -38,6 +43,7 @@ extension VaultStore {
                 } catch ReplicaError.conflict { continue }
             }
             guard success else { throw VaultError.changed }
+            syncProgress.advance()
         }
         if let tags {
             let data = try Self.pack(tags, keys: keys, purpose: "remote-tags")
@@ -46,6 +52,7 @@ extension VaultStore {
     }
 
     private func reconcile(_ id: UUID, with replica: VaultReplica) async throws {
+        syncProgress.describe("Comparaison des versions…")
         let remote = try await replica.fetch(id, withFile: false)
         try gate.check()
         var local = entries[id]
@@ -59,6 +66,7 @@ extension VaultStore {
                     if let previous = local?.document {
                         guard previous.key == info.key, previous.size == info.size else { throw VaultError.damaged }
                     } else {
+                        syncProgress.describe("Réception du document…")
                         let full = try await replica.fetch(id, withFile: true)
                         try gate.check()
                         guard full?.version == remote.version, entries[id] == local else { throw ReplicaError.conflict }
@@ -81,6 +89,7 @@ extension VaultStore {
         guard let local else { return }
         let envelope = try Self.pack(local, keys: keys, purpose: purpose)
         try gate.check()
+        syncProgress.describe("Envoi de la modification…")
         try await replica.put(id, envelope: envelope, file: local.document.map { _ in blob(id) },
                               replacing: remote?.version)
         try gate.check()

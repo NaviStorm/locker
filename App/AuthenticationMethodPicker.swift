@@ -20,10 +20,15 @@ struct AuthenticationMethodPicker: View {
             Text("Mot de passe du Mac").tag(VaultAuthenticationMethod.passcode)
             #else
             Text("Code de l’appareil").tag(VaultAuthenticationMethod.passcode)
+                #if targetEnvironment(simulator)
+                .disabled(true)
+                #endif
             #endif
             Text(biometryName(context.biometryType))
                 .tag(VaultAuthenticationMethod.biometrics)
                 .disabled(!available)
+            Text("Code numérique du coffre").tag(VaultAuthenticationMethod.numericCode)
+            Text("Mot de passe du coffre").tag(VaultAuthenticationMethod.vaultPassword)
         }
     }
 }

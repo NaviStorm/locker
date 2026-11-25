@@ -1,14 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+<key>CFBundlePackageType</key><string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+<key>CFBundleDisplayName</key><string>Locker</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 <key>CFBundleDevelopmentRegion</key><string>fr</string>
 <key>LockerDropboxKey</key><string>$(DROPBOX_APP_KEY)</string>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>Dropbox OAuth</string><key>CFBundleURLSchemes</key><array><string>db-$(DROPBOX_APP_KEY)</string></array></dict></array>
 <key>NSFaceIDUsageDescription</key><string>Authentifiez-vous pour accéder aux clés de votre coffre.</string>
-<key>NSCameraUsageDescription</key><string>Prendre une photo pour importer un document dans le coffre.</string>
-<key>NSLocalNetworkUsageDescription</key><string>Synchroniser ce coffre avec le serveur WebDAV que vous avez choisi.</string>
+<key>NSCameraUsageDescription</key><string>Photographier ou numériser un document pour l’ajouter au coffre.</string>
+<key>NSBonjourServices</key><array><string>_locker-family._tcp</string></array>
+<key>NSLocalNetworkUsageDescription</key><string>Détecter l’iPhone de votre proche pour partager un coffre ou synchroniser avec votre serveur WebDAV.</string>
 <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict/></dict>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>fr.locker.document-backup</string>
+<key>UTTypeDescription</key><string>Sauvegarde chiffrée Locker</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>lockerbackup</string></array></dict>
+</dict></array>
 <key>CKSharingSupported</key><true/>
 </dict></plist>

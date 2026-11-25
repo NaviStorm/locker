@@ -8,8 +8,13 @@ extension VaultStore {
         try FamilyEvent.authorize(member, action: action, scope: scope)
     }
 
+    func canStartFamily() throws -> Bool {
+        try gate.check()
+        return try family == nil && entries.isEmpty && settings().provider == .local
+    }
+
     func createFamily(using device: DeviceIdentity) throws {
-        guard family == nil, entries.isEmpty, try settings().provider == .local else { throw FamilyError.nonempty }
+        guard try canStartFamily() else { throw FamilyError.nonempty }
         let owner = Member(card: device.card, role: .admin, documents: nil)
         let rescue = try Member(card: DeviceIdentity(rescue: keys).card, role: .admin, documents: nil)
         let tip = try Policy.issue([owner, rescue], prior: nil, by: device)
@@ -20,7 +25,7 @@ extension VaultStore {
     func createFamily() throws { try createFamily(using: identity()) }
 
     func joinFamily(_ ticket: String, from admin: PublicIdentity, using device: DeviceIdentity) throws {
-        guard family == nil, entries.isEmpty, try settings().provider == .local else { throw FamilyError.nonempty }
+        guard try canStartFamily() else { throw FamilyError.nonempty }
         let state = try FamilyInvitation.open(ticket, by: device, trustedAdmin: admin)
         try commit(entries, pending, family: state)
     }
@@ -29,21 +34,62 @@ extension VaultStore {
         try joinFamily(ticket, from: admin, using: identity())
     }
 
+    func removalProtectionReason() throws -> String? {
+        try gate.check()
+        return family.flatMap { VaultKind.protectionReason($0, keys: keys) }
+    }
+
+    func nameDevice(_ fingerprint: String, name: String) throws {
+        try gate.check()
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 80, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw TransportError(message: "Saisissez un nom de 1 à 80 caractères.")
+        }
+        guard var state = family, try state.tip.decoded().member(fingerprint) != nil,
+              fingerprint != state.recoveryFingerprint else { throw FamilyError.policy }
+        var names = state.deviceNames ?? [:]
+        names[fingerprint] = name
+        state.deviceNames = names
+        try commit(entries, pending, family: state)
+    }
+
     func members() throws -> [Member] {
         try gate.check()
         return try family?.tip.decoded().members ?? []
     }
 
-    func changeMembership(card: PublicIdentity, role: FamilyRole?, scope: Set<UUID>?, using device: DeviceIdentity, reencrypt: Bool = false) throws {
+    func updateMemberRole(_ member: Member, to role: FamilyRole, using device: DeviceIdentity? = nil) throws {
+        try gate.check()
+        guard let policy = try family?.tip.decoded(),
+              let current = policy.member(member.card.fingerprint),
+              current.role == member.role, current.documents == member.documents else { throw VaultError.changed }
+        let signer = try device ?? identity()
+        guard policy.member(signer.card.fingerprint)?.role == .admin, signer.card != member.card,
+              family?.recoveryFingerprint != member.card.fingerprint else {
+            throw FamilyError.denied
+        }
+        guard current.role != role else { return }
+        try changeMembership(card: current.card, role: role, scope: role == .admin ? nil : current.documents, using: signer)
+    }
+
+    func changeMembership(card: PublicIdentity, role: FamilyRole?, scope: Set<UUID>?, using device: DeviceIdentity, reencrypt: Bool = false,
+                          contact: TransportContact? = nil, cloudURL: URL? = nil) throws {
         try gate.check()
         guard var state = family else { throw FamilyError.policy }
         let old = try state.tip.decoded()
         guard device.card.fingerprint != card.fingerprint, old.member(device.card.fingerprint)?.role == .admin else {
             throw FamilyError.denied
         }
+        if let contact {
+            var contacts = state.contacts ?? [:]
+            contacts[card.fingerprint] = contact
+            state.contacts = contacts
+        }
+        if let cloudURL { state.cloudURL = cloudURL }
         var members = old.members.filter { $0.card.fingerprint != card.fingerprint }
         if let role { members.append(Member(card: card, role: role, documents: scope)) }
         let next = try Policy.issue(members, prior: state.tip, by: device)
+        try state.trackPermissionChanges(from: old, to: next.decoded())
         if role == nil, let email = state.contacts?.removeValue(forKey: card.fingerprint),
            state.contacts?.values.contains(email) != true {
             state.removals = (state.removals ?? []) + [email]
@@ -70,6 +116,7 @@ extension VaultStore {
         guard var state = family else { throw FamilyError.policy }
         try next.verify(after: state.tip)
         let policy = try next.decoded()
+        try state.trackPermissionChanges(from: state.tip.decoded(), to: policy)
         let grant = policy.member(state.principal)
         let retained = entries.filter { grant?.covers($0.value.scope) == true }
         let removed = Set(entries.keys).subtracting(retained.keys)
@@ -92,15 +139,18 @@ extension VaultStore {
 
     func synchronizeFamily(bucket: ObjectBucket, identity: DeviceIdentity) async throws {
         try gate.check()
+        syncProgress.begin("Vérification des droits de partage…")
         try await synchronizePolicy(bucket)
         guard let state = family, try state.tip.decoded().member(identity.card.fingerprint) != nil else { throw FamilyError.denied }
         try await finishProviderRemovals(bucket)
         let digest = state.tip.digest
         let prefix = "e-" + digest + "-"
         let parts = try ObjectReplica(bucket: bucket, cache: root.appendingPathComponent("family-transfers"), gate: gate)
+        syncProgress.begin("Inventaire du coffre familial…")
         let inventory = try await bucket.inventory()
         await parts.seedInventory(inventory)
         let events = inventory.keys.filter { $0.hasPrefix(prefix) && !state.seen.contains($0) }.sorted()
+        syncProgress.begin("Modifications à recevoir", total: events.count)
         for name in events {
             try checkEpoch(digest)
             guard let value = try await bucket.get(name) else { throw VaultError.changed }
@@ -112,9 +162,12 @@ extension VaultStore {
                 try await ingestFamily(body, chunks: parts, epoch: digest)
             }
             try markSeen(name, epoch: digest)
+            syncProgress.advance()
         }
 
-        for (id, revision) in pending {
+        let outgoing = pending
+        syncProgress.begin("Modifications à envoyer", total: outgoing.count)
+        for (id, revision) in outgoing {
             try checkEpoch(digest)
             guard let entry = entries[id], entry.revision == revision else { continue }
             let action: FamilyAction = entry.document == nil ? .delete : (entry.generation == 1 ? .add : .edit)
@@ -134,7 +187,10 @@ extension VaultStore {
             try checkEpoch(digest)
             try markSeen(name, epoch: digest)
             try acknowledge(id, revision: revision)
+            syncProgress.advance()
         }
+        syncProgress.begin("Finalisation du partage…")
+        try await finishProviderPermissionChanges(bucket)
     }
 
     /// Remove historical key envelopes from the live namespace after a durable signed deletion.

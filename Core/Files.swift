@@ -40,6 +40,15 @@ final class SessionGate: @unchecked Sendable {
     private let mutex = NSLock()
     private var active = true
     func revoke() { mutex.withLock { active = false } }
+    func close<T>(after operation: () throws -> T) throws -> T {
+        try mutex.withLock {
+            guard active else { throw VaultError.locked }
+            let result = try operation()
+            active = false
+            return result
+        }
+    }
+
     func check() throws { try authorized {} }
     func authorized<T>(_ body: () throws -> T) throws -> T {
         try mutex.withLock {

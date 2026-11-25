@@ -17,6 +17,8 @@ struct KeychainFailure: LocalizedError {
 struct DeviceKeychain: DeviceKeyAccess {
     var account = "root-v1"
     var protectNewKey = true
+    var secret: String?
+    var newMethod: VaultAuthenticationMethod?
     private static let unlockedMarker = Data("device-unlocked-v1".utf8)
     var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
@@ -33,11 +35,16 @@ struct DeviceKeychain: DeviceKeyAccess {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { throw KeychainFailure(status: status) }
-        return try VaultKeys(secret: data)
+        if data.count == 32 {
+            guard secret == nil else { throw VaultError.changed }
+            return try VaultKeys(secret: data)
+        }
+        guard let secret else { throw VaultSecretError.incorrect }
+        return try JSONDecoder().decode(WrappedVaultKey.self, from: data).open(secret: secret, account: account)
     }
 
     // Older items have no marker and require user presence. The ACL enforces access.
-    func requiresAuthentication() -> Bool {
+    private func marker() -> Data? {
         var lookup = query
         let silent = LAContext()
         silent.interactionNotAllowed = true
@@ -45,29 +52,35 @@ struct DeviceKeychain: DeviceKeyAccess {
         lookup[kSecReturnAttributes as String] = true
         var result: CFTypeRef?
         guard SecItemCopyMatching(lookup as CFDictionary, &result) == errSecSuccess,
-              let attributes = result as? [String: Any] else { return true }
-        return attributes[kSecAttrGeneric as String] as? Data != Self.unlockedMarker
+              let attributes = result as? [String: Any] else { return nil }
+        return attributes[kSecAttrGeneric as String] as? Data
     }
 
-    private func protectionAttributes(required: Bool) throws -> [String: Any] {
+    func requiresAuthentication() -> Bool { marker() != Self.unlockedMarker }
+
+    func customMethod() -> VaultAuthenticationMethod? {
+        guard let marker = marker(), let tag = String(data: marker, encoding: .utf8),
+              let method = VaultAuthenticationMethod(rawValue: tag), method.isCustom else { return nil }
+        return method
+    }
+
+    private func protectionAttributes(required: Bool, custom: VaultAuthenticationMethod? = nil) throws -> [String: Any] {
         var accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         #if os(iOS)
         if required { accessibility = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly }
         #endif
         var error: Unmanaged<CFError>?
-        guard let control = SecAccessControlCreateWithFlags(nil, accessibility, required ? .userPresence : [], &error) else {
+        guard let control = SecAccessControlCreateWithFlags(nil, accessibility, required && custom == nil ? .userPresence : [], &error) else {
             throw error?.takeRetainedValue() as Error? ?? VaultError.unavailable
         }
         return [kSecAttrAccessControl as String: control,
-                kSecAttrGeneric as String: required ? Data("user-presence-v1".utf8) : Self.unlockedMarker]
+                kSecAttrGeneric as String: custom.map { Data($0.rawValue.utf8) } ?? (required ? Data("user-presence-v1".utf8) : Self.unlockedMarker)]
     }
 
-    func changeProtection(required: Bool, method: VaultAuthenticationMethod, context: LAContext, gate: SessionGate) async throws {
-        let reason = required ? "Activer la protection de ce coffre" : "Autoriser l’ouverture de ce coffre sans authentification"
-        try await method.confirm(using: context, reason: reason)
-        try gate.check()
-        var attributes = try protectionAttributes(required: required)
-        attributes[kSecValueData as String] = try read(context: context).secret
+    // Replace the value and its access control together. A failed update leaves the original item usable.
+    func replaceKey(_ keys: VaultKeys, method: VaultAuthenticationMethod, newSecret: String?,
+                    required: Bool, context: LAContext, gate: SessionGate) throws {
+        let attributes = try storageAttributes(keys, method: method, password: newSecret, required: required)
         var lookup = query
         lookup[kSecUseAuthenticationContext as String] = context
         try gate.authorized {
@@ -76,9 +89,28 @@ struct DeviceKeychain: DeviceKeyAccess {
         }
     }
 
+    private func storageAttributes(_ keys: VaultKeys, method: VaultAuthenticationMethod,
+                                   password: String?, required: Bool) throws -> [String: Any] {
+        if method.isCustom {
+            guard required, let password else { throw VaultError.locked }
+            var attrs = try protectionAttributes(required: true, custom: method)
+            attrs[kSecValueData as String] = try WrappedVaultKey.make(keys: keys, secret: password, method: method, account: account)
+            return attrs
+        }
+        var attrs = try protectionAttributes(required: required)
+        attrs[kSecValueData as String] = keys.secret
+        return attrs
+    }
+
+    func changeProtection(required: Bool, method: VaultAuthenticationMethod, context: LAContext, gate: SessionGate) async throws {
+        let reason = required ? "Activer la protection de ce coffre" : "Autoriser l’ouverture de ce coffre sans authentification"
+        try await method.confirm(using: context, reason: reason)
+        try gate.check()
+        try replaceKey(read(context: context), method: method, newSecret: nil, required: required, context: context, gate: gate)
+    }
+
     func install(_ keys: VaultKeys, context: LAContext) throws {
-        var item = query.merging(try protectionAttributes(required: protectNewKey)) { _, new in new }
-        item[kSecValueData as String] = keys.secret
+        var item = query.merging(try storageAttributes(keys, method: newMethod ?? .passcode, password: secret, required: protectNewKey)) { _, new in new }
         item[kSecUseAuthenticationContext as String] = context
         let status = SecItemAdd(item as CFDictionary, nil)
         if status == errSecDuplicateItem {
@@ -89,7 +121,7 @@ struct DeviceKeychain: DeviceKeyAccess {
     }
 }
 
-enum AccessMode { case unlock, create, recover(String) }
+enum AccessMode { case unlock, unlockWithSecret(String), create, recover(String) }
 
 enum VaultAccess {
     /// Reading the item enforces the access control chosen for this vault on this device.
@@ -98,7 +130,7 @@ enum VaultAccess {
         let catalog = root.appendingPathComponent("catalog.v1")
         let existing = FileManager.default.fileExists(atPath: catalog.path)
         switch mode {
-        case .unlock: break
+        case .unlock, .unlockWithSecret: guard existing else { throw VaultError.unavailable }
         case .create, .recover:
             let keys: VaultKeys
             if case let .recover(code) = mode { keys = try VaultKeys(code: code) }

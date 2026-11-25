@@ -63,21 +63,43 @@ enum BlockCipher {
 
     static func decrypt(id: UUID, info: Document, from url: URL, gate: SessionGate,
                         write: (Data) throws -> Void) throws {
-        guard info.key.count == 32, info.size >= 0 else { throw VaultError.damaged }
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
+        try readDocument(id: id, info: info, input: input, gate: gate, write: write)
+    }
+
+    /// A backup contains consecutive encrypted blobs. Authenticate exactly the declared length
+    /// and optionally preserve the original ciphertext when importing into a new vault.
+    static func readDocument(id: UUID, info: Document, input: FileHandle, gate: SessionGate,
+                             encryptedLength: UInt64? = nil, copyTo output: FileHandle? = nil,
+                             write: (Data) throws -> Void) throws {
+        guard info.key.count == 32, info.size >= 0 else { throw VaultError.damaged }
+        var remaining = encryptedLength
         let key = SymmetricKey(data: info.key)
         var position: UInt64 = 0
         var total: Int64 = 0
         while true {
             try gate.check()
+            try Task.checkCancellation()
+            if let remaining, remaining < 4 { throw VaultError.damaged }
             let prefix = try readExactly(4, from: input)
             let length = prefix.reduce(0) { $0 * 256 + Int($1) }
             guard (overhead...(overhead + chunk)).contains(length) else { throw VaultError.damaged }
-            let box = try AES.GCM.SealedBox(combined: readExactly(length, from: input))
+            if let left = remaining {
+                let frameSize = UInt64(length + 4)
+                guard left >= frameSize else { throw VaultError.damaged }
+                remaining = left - frameSize
+            }
+            let sealed = try readExactly(length, from: input)
+            let box = try AES.GCM.SealedBox(combined: sealed)
             let bytes = try AES.GCM.open(box, using: key, authenticating: aad(id, position))
+            if let output {
+                try output.write(contentsOf: prefix)
+                try output.write(contentsOf: sealed)
+            }
             if bytes.isEmpty {
-                guard total == info.size, (try input.read(upToCount: 1) ?? Data()).isEmpty else {
+                let atEnd = try remaining.map { $0 == 0 } ?? (input.read(upToCount: 1) ?? Data()).isEmpty
+                guard total == info.size, atEnd else {
                     throw VaultError.damaged
                 }
                 return

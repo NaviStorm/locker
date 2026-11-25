@@ -1,9 +1,11 @@
 #if !SWIFT_PACKAGE
 import XCTest
 #if targetEnvironment(simulator)
+import PDFKit
 import LocalAuthentication
 import Security
 import SwiftUI
+import Vision
 #endif
 @testable import Locker
 
@@ -120,6 +122,181 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @MainActor func testBackupSelectionShowsVerificationSuccessAndErrors() async throws {
+        let keys = VaultKeys()
+        let source = try VaultStore(root: location("source"), keys: keys, create: true)
+        _ = try await source.importData(Data([1, 2, 3]), name: "Document fictif")
+        let backup = try await source.writeBackup(in: location("."))
+        let model = LockerModel(base: location("destination"))
+        let root = location("coffre")
+        let target = try VaultStore(root: root, keys: VaultKeys(), create: true)
+        _ = try await target.importData(Data([4]), name: "Déjà présent")
+        model.store = target
+        let before = try Data(contentsOf: root.appendingPathComponent("catalog.v1"))
+        let operation = BackupOperation()
+
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let host = UIHostingController(rootView: BackupScreen(model: model, operation: operation)
+            .frame(width: 300, height: 290))
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+
+        await operation.handle(.success(backup), action: .verify, code: keys.recoveryCode, model: model)
+        XCTAssertEqual(operation.status, .success("Sauvegarde vérifiée • 1 élément"))
+        try await Task.sleep(for: .milliseconds(250))
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLanguages = ["fr-FR"]
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        XCTAssertTrue(lines.joined(separator: " ").localizedStandardContains("Sauvegarde vérifiée"),
+                      "Le résultat doit être visible sans faire défiler le formulaire.")
+        await operation.handle(.success(backup), action: .verify, code: VaultKeys().recoveryCode, model: model)
+        guard case let .failure(message) = operation.status else { return XCTFail("Erreur de code invisible") }
+        XCTAssertFalse(message.isEmpty)
+        await operation.handle(.failure(CocoaError(.fileReadNoPermission)), action: .verify, code: "", model: model)
+        guard case .failure = operation.status else { return XCTFail("Erreur de sélection invisible") }
+        await operation.handle(.failure(CocoaError(.userCancelled)), action: .verify, code: "", model: model)
+        XCTAssertEqual(operation.status, .idle)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("catalog.v1")), before)
+    }
+
+    @MainActor func testFirstProtectedVaultOnDuoSimulator() async throws {
+        guard ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
+            throw XCTSkip("Trousseau du simulateur iPhone Duo uniquement.")
+        }
+        let base = location("premier-coffre")
+        let model = LockerModel(base: base)
+        var finished = false
+        model.open(.create, newSlot: true) { finished = true }
+        let setup = try XCTUnwrap(model.newVaultSetup)
+        XCTAssertTrue(model.slots.isEmpty)
+        XCTAssertNil(model.store)
+        XCTAssertFalse(finished)
+        model.lock()
+        XCTAssertNil(model.newVaultSetup)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: base.path))
+
+        func settle() async throws {
+            for _ in 0..<200 where model.opening { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertFalse(model.opening)
+        }
+
+        model.completeNewVaultSetup(setup, with: .init(method: .numericCode, value: "0198374652"))
+        XCTAssertFalse(model.opening)
+        model.open(.create, newSlot: true)
+        model.completeNewVaultSetup(try XCTUnwrap(model.newVaultSetup), with: .init(method: .numericCode, value: "1234"))
+        try await settle()
+        XCTAssertNil(model.store)
+        XCTAssertTrue(model.slots.isEmpty)
+        XCTAssertEqual(model.problem, VaultSecretError.invalidPIN.localizedDescription)
+        model.lock()
+
+        for (method, value) in [(VaultAuthenticationMethod.numericCode, "0198374652"), (.vaultPassword, "Rosée!Fictive72")] {
+            finished = false
+            model.open(.create, newSlot: true) { finished = true }
+            model.completeNewVaultSetup(try XCTUnwrap(model.newVaultSetup), with: .init(method: method, value: value))
+            try await settle()
+            let vault = try XCTUnwrap(model.store, model.problem ?? "")
+            let device = DeviceKeychain(account: model.slot)
+            defer { SecItemDelete(device.query as CFDictionary) }
+            XCTAssertTrue(finished)
+            let recovery = try XCTUnwrap(model.recovery)
+            XCTAssertTrue(device.requiresAuthentication())
+            XCTAssertEqual(device.customMethod(), method)
+            XCTAssertThrowsError(try device.read(context: LAContext()))
+            let doc = try await vault.importData(Data([42]), name: "Exemple")
+            model.lock()
+            model.open(.unlockWithSecret("0000000000"))
+            try await settle()
+            XCTAssertNil(model.store)
+            model.open(.unlockWithSecret(value))
+            try await settle()
+            let reopened = try XCTUnwrap(model.store)
+            let data = try await reopened.preview(doc)
+            XCTAssertEqual(data, Data([42]))
+            model.lock()
+            let replacement = LockerModel.NewVaultSecret(method: .numericCode, value: "4028951673")
+            model.open(.recover(VaultKeys().recoveryCode))
+            model.completeNewVaultSetup(try XCTUnwrap(model.newVaultSetup), with: replacement)
+            try await settle()
+            XCTAssertNil(model.store)
+            XCTAssertEqual(device.customMethod(), method)
+            model.open(.recover(recovery))
+            let repair = try XCTUnwrap(model.newVaultSetup)
+            model.completeNewVaultSetup(repair, with: replacement)
+            try await settle()
+            XCTAssertNotNil(model.store)
+            model.lock()
+            model.open(.unlockWithSecret(replacement.value))
+            try await settle()
+            let repaired = try XCTUnwrap(model.store)
+            let restored = try await repaired.preview(doc)
+            XCTAssertEqual(restored, data)
+            model.lock()
+        }
+    }
+
+    @MainActor func testCustomVaultMethodsOnDuoKeychain() async throws {
+        guard ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
+            throw XCTSkip("Trousseau du simulateur iPhone Duo uniquement.")
+        }
+        final class TestDevicePasscode: LAContext {
+            override func evaluateAccessControl(_ accessControl: SecAccessControl, operation: LAAccessControlOperation,
+                                                localizedReason: String) async throws -> Bool { true }
+        }
+        let id = UUID().uuidString
+        let base = location("identification")
+        let root = base.appendingPathComponent(id)
+        let device = DeviceKeychain(account: id, protectNewKey: false)
+        let pin = "0198374652"
+        let password = "Rosée!Fictive72"
+        defer {
+            SecItemDelete(device.query as CFDictionary)
+            UserDefaults.standard.removeObject(forKey: "authenticationMethod." + id)
+        }
+        let first = try VaultAccess.open(.create, at: root, device: device, context: LAContext(), gate: SessionGate())
+        let doc = try await first.importData(Data([1, 3, 5]), name: "Document fictif")
+        let recovery = try await first.recoveryCode()
+        try device.replaceKey(try device.read(context: LAContext()), method: .numericCode, newSecret: pin,
+                              required: true, context: LAContext(), gate: first.gate)
+        first.gate.revoke()
+        XCTAssertEqual(device.customMethod(), .numericCode)
+        XCTAssertThrowsError(try device.read(context: LAContext()))
+        func open(_ mode: AccessMode) async throws -> VaultStore {
+            try await LockerModel.authenticateAndOpen(mode, at: root, context: TestDevicePasscode(),
+                                                       gate: SessionGate(), protectNewKey: false, method: .passcode)
+        }
+        do { _ = try await open(.unlock); XCTFail("Ouverture sans le secret du coffre") } catch VaultSecretError.incorrect {}
+        do { _ = try await open(.unlockWithSecret("9999999999")); XCTFail("Code incorrect accepté") } catch VaultSecretError.incorrect {}
+        let session = try await open(.unlockWithSecret(pin))
+        let model = LockerModel(base: base)
+        try await model.adoptRotated(session, slotID: id, code: recovery)
+        do {
+            try await model.setSecretProtection(to: .passcode, required: false, currentSecret: "0000000000", newSecret: "")
+            XCTFail("Désactivation sans le code actuel")
+        } catch VaultSecretError.incorrect {}
+        XCTAssertEqual(device.customMethod(), .numericCode)
+        try await model.setSecretProtection(to: .vaultPassword, required: true, currentSecret: pin, newSecret: password)
+        model.lock()
+        XCTAssertEqual(device.customMethod(), .vaultPassword)
+        do { _ = try await open(.unlockWithSecret(pin)); XCTFail("Ancien code accepté") } catch VaultSecretError.incorrect {}
+        let reopened = try await open(.unlockWithSecret(password))
+        let data = try await reopened.preview(doc)
+        XCTAssertEqual(data, Data([1, 3, 5]))
+        reopened.gate.revoke()
+        do { _ = try await open(.recover(VaultKeys().recoveryCode)); XCTFail("Mauvais code de récupération accepté") } catch {}
+        XCTAssertEqual(device.customMethod(), .vaultPassword)
+        let repaired = try await open(.recover(recovery))
+        XCTAssertNil(device.customMethod())
+        XCTAssertTrue(device.requiresAuthentication())
+        let afterRecovery = try await repaired.preview(doc)
+        XCTAssertEqual(afterRecovery, data)
+    }
+
     @MainActor func testClosedDuoReturnButtons() async throws {
         guard #available(iOS 27.1, *),
               ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
@@ -202,6 +379,75 @@ final class AppSessionTests: VaultTestCase {
         XCTFail("Les deux commandes doivent être accessibles sans ouvrir de menu.")
     }
 
+    @MainActor private func button(_ label: String, in host: UIViewController) async throws -> NSObject {
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(50))
+            var visited = Set<ObjectIdentifier>()
+            func find(_ node: NSObject) -> NSObject? {
+                guard visited.insert(ObjectIdentifier(node)).inserted else { return nil }
+                if node.accessibilityLabel?.contains(label) == true, node.accessibilityTraits.contains(.button),
+                   !node.accessibilityTraits.contains(.notEnabled) {
+                    return node
+                }
+                let count = node.accessibilityElementCount()
+                var children = (node.accessibilityElements ?? []).compactMap { $0 as? NSObject }
+                if count > 0 && count != NSNotFound {
+                    children += (0..<count).compactMap { node.accessibilityElement(at: $0) as? NSObject }
+                }
+                children += (node as? UIView)?.subviews ?? []
+                for child in children { if let match = find(child) { return match } }
+                return nil
+            }
+            if let match = find(host.presentedViewController?.view ?? host.view) { return match }
+        }
+        throw TransportError(message: "Bouton absent : " + label)
+    }
+
+    @MainActor func testPhotoEditorSavesFromDocumentScreen() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("photos"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        let data = UIGraphicsImageRenderer(size: CGSize(width: 60, height: 40)).pngData { renderer in
+            UIColor.orange.setFill()
+            renderer.fill(CGRect(x: 0, y: 0, width: 60, height: 40))
+        }
+        let id = try await store.importData(data, name: "Image.png")
+        model.store = store
+        model.library = try await store.library()
+        let photo = try XCTUnwrap(model.documents.first)
+        var selected: UUID?
+        let host = UIHostingController(rootView: NavigationStack {
+            DocumentScreen(model: model, item: photo, select: { selected = $0 }, addVersion: {}, actions: EmptyView())
+        })
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        addTeardownBlock { @MainActor in
+            if let transition = host.presentedViewController?.transitionCoordinator {
+                await withCheckedContinuation { done in
+                    if !transition.animate(alongsideTransition: nil, completion: { _ in done.resume() }) {
+                        done.resume()
+                    }
+                }
+            }
+            if presenter.presentedViewController === host {
+                await withCheckedContinuation { done in presenter.dismiss(animated: false) { done.resume() } }
+            }
+        }
+        for label in ["Modifier la photo", "Rotation à droite", "Recadrer", "Appliquer le cadre", "Enregistrer"] {
+            let control = try await button(label, in: host)
+            if let button = control as? UIControl { button.sendActions(for: .primaryActionTriggered) }
+            else { XCTAssertTrue(control.accessibilityActivate(), label) }
+        }
+        for _ in 0..<40 where selected == nil { try await Task.sleep(for: .milliseconds(50)) }
+        let editedID = try XCTUnwrap(selected)
+        XCTAssertNotEqual(editedID, id)
+        XCTAssertEqual(model.documents.map(\.id), [editedID])
+        XCTAssertEqual(model.library.versions(of: id).map(\.id), [editedID, id])
+        let image = try await store.photoEditingPreview(editedID)
+        XCTAssertLessThan(image.width, image.height)
+    }
+
     @MainActor func testThumbnailGridAllowsMarkingTwoDocuments() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
@@ -219,34 +465,44 @@ final class AppSessionTests: VaultTestCase {
         await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
         defer { host.dismiss(animated: false) }
 
-        func button(_ label: String) async throws -> NSObject {
-            for _ in 0..<20 {
-                try await Task.sleep(for: .milliseconds(50))
-                var visited = Set<ObjectIdentifier>()
-                func find(_ node: NSObject) -> NSObject? {
-                    guard visited.insert(ObjectIdentifier(node)).inserted else { return nil }
-                    if node.accessibilityLabel?.contains(label) == true && node.accessibilityTraits.contains(.button) {
-                        return node
-                    }
-                    let count = node.accessibilityElementCount()
-                    var children = (node.accessibilityElements ?? []).compactMap { $0 as? NSObject }
-                    if count > 0 && count != NSNotFound {
-                        children += (0..<count).compactMap { node.accessibilityElement(at: $0) as? NSObject }
-                    }
-                    children += (node as? UIView)?.subviews ?? []
-                    for child in children { if let match = find(child) { return match } }
-                    return nil
-                }
-                if let match = find(host.view) { return match }
-            }
-            throw TransportError(message: "Bouton absent : " + label)
-        }
-
         for label in ["Sélectionner", "Premier.txt", "Second.txt"] {
-            let control = try await button(label)
+            let control = try await button(label, in: host)
             XCTAssertTrue(control.accessibilityActivate(), label)
         }
-        _ = try await button("Déplacer (2)")
+        _ = try await button("Déplacer (2)", in: host)
+    }
+
+    @MainActor func testPhotoAndScannedPagesImportIntoChosenFolder() async throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 120), format: format)
+        let images = [UIColor.red, .green].map { color in
+            renderer.image { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 80, height: 120))
+            }
+        }
+        let data = try XCTUnwrap(images[0].pngData())
+        let file = location("Reçu.jpg")
+        try data.write(to: file)
+        let image = try LibraryPhoto(file: file)
+        XCTAssertEqual(image.name, "Reçu.png")
+        XCTAssertEqual(image.bytes, data)
+        try Data([0, 1, 2]).write(to: location("incorrect.png"))
+        XCTAssertThrowsError(try LibraryPhoto(file: location("incorrect.png")))
+
+        let store = try VaultStore(root: location("import-images"), keys: VaultKeys(), create: true)
+        let folder = try await store.createFolder("Factures")
+        let photo = try await store.importData(image.bytes, name: image.name, folder: folder)
+        let pdf = ScanResult.pdf(pageCount: images.count) { images[$0] }
+        let scan = try await store.importData(pdf, name: "Numérisation.pdf", folder: folder)
+        let library = try await store.library()
+        XCTAssertTrue(library.documents(in: "").isEmpty)
+        XCTAssertEqual(Set(library.documents(in: folder).map(\.id)), Set([photo, scan]))
+        let storedPDF = try await store.preview(scan)
+        XCTAssertEqual(PDFDocument(data: storedPDF)?.pageCount, 2)
+        let storedPhoto = try await store.preview(photo)
+        XCTAssertEqual(storedPhoto, data)
     }
 
     @MainActor func testImportScreenOffersDecompressionBeforeChoosingAFile() async throws {
@@ -257,6 +513,8 @@ final class AppSessionTests: VaultTestCase {
         await withCheckedContinuation { done in
             presenter.present(host, animated: false) { done.resume() }
         }
+        let expected: Set<String> = ["Décompresser une archive…", "Choisir des fichiers…", "Choisir dans la photothèque…",
+                                     "Prendre une photo", "Scanner un document en PDF"]
         var buttons = Set<String>()
         var labels = Set<String>()
         for _ in 0..<40 {
@@ -280,9 +538,9 @@ final class AppSessionTests: VaultTestCase {
                 }
             }
             inspect(host.view)
-            if buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]) { break }
+            if buttons.isSuperset(of: expected) { break }
         }
-        XCTAssertTrue(buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]),
+        XCTAssertTrue(buttons.isSuperset(of: expected),
                       "Éléments affichés : \(labels.sorted())")
         await withCheckedContinuation { done in
             host.dismiss(animated: false) { done.resume() }
@@ -304,11 +562,11 @@ final class AppSessionTests: VaultTestCase {
         VaultAuthenticationMethod.biometrics.remember(for: otherID)
         defer { UserDefaults.standard.removeObject(forKey: "authenticationMethod." + otherID) }
         var requestedMethods: [VaultAuthenticationMethod] = []
-        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey, method in
+        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey, method, _ in
             requestedMethods.append(method)
             if deny { throw VaultError.locked }
             switch mode {
-            case .unlock: return try VaultStore(root: root, keys: keys, gate: gate)
+            case .unlock, .unlockWithSecret: return try VaultStore(root: root, keys: keys, gate: gate)
             case .create:
                 newProtection = protectNewKey
                 return try VaultStore(root: root, keys: VaultKeys(), create: true, gate: gate)

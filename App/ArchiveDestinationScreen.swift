@@ -25,6 +25,7 @@ struct ArchiveDestinationScreen: View {
     @State private var folder: String
     @Environment(\.dismiss) private var dismiss
     @State private var destination: ArchiveDestination
+    @State private var secret = ""
     @State private var protectNewKey = true
 
     init(model: LockerModel, files: SelectedImport, folder: String) {
@@ -45,7 +46,7 @@ struct ArchiveDestinationScreen: View {
                 Section {
                     Picker("Coffre de destination", selection: $destination) {
                         ForEach(model.slots, id: \.self) { slot in
-                            Text(model.vaultNames[slot] ?? ("Coffre " + slot.prefix(8))).tag(ArchiveDestination.existing(slot))
+                            Text(model.pickerTitle(for: slot)).tag(ArchiveDestination.existing(slot))
                         }
                         Text("Nouveau coffre").tag(ArchiveDestination.new)
                     }
@@ -70,14 +71,18 @@ struct ArchiveDestinationScreen: View {
                     Button("Décompresser ici", systemImage: "archivebox") { finish(extract: true) }
                     Button("Importer sans décompresser", systemImage: "doc.badge.plus") { finish(extract: false) }
                 } else if case let .existing(id) = destination {
+                    let method = LockerModel.method(for: id)
+                    if method.isCustom { VaultSecretField(title: method.secretTitle, method: method, text: $secret) }
                     Button("Ouvrir ce coffre pour choisir l’emplacement") {
                         dismiss()
-                        model.chooseArchiveFolder(files, in: id)
-                    }
+                        model.chooseArchiveFolder(files, in: id, secret: secret)
+                        secret = ""
+                    }.disabled(method.isCustom && secret.isEmpty)
                 }
             }
             .vaultFormStyle()
             .navigationTitle("Importer une archive")
+            .onChange(of: destination) { secret = "" }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } } }
         }.frame(idealWidth: 480, idealHeight: 420)
     }
@@ -97,7 +102,7 @@ extension LockerModel {
         }
     }
 
-    func chooseArchiveFolder(_ files: SelectedImport, in id: String) {
+    func chooseArchiveFolder(_ files: SelectedImport, in id: String, secret: String = "") {
         guard store != nil, !extracting else { return }
         guard slots.contains(id) else {
             problem = "Le coffre de destination est indisponible."
@@ -105,7 +110,7 @@ extension LockerModel {
         }
         lock()
         slot = id
-        open(.unlock) { self.pendingArchivePlacement = files }
+        open(authenticationMethod.isCustom ? .unlockWithSecret(secret) : .unlock) { self.pendingArchivePlacement = files }
     }
 
     func importArchive(_ files: SelectedImport, inNewVault: Bool, folder: String, extract: Bool,

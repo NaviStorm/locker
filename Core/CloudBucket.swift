@@ -32,6 +32,12 @@ struct CloudBucket: ObjectBucket {
 
     func authorize(email: String, write: Bool) async throws -> URL {
         guard isOwner else { throw FamilyError.denied }
+        let participant = try await container.shareParticipant(forEmailAddress: email)
+        return try await authorize(participant: participant, write: write)
+    }
+
+    func authorize(participant: CKShare.Participant, write: Bool, preserveWrite: Bool = false) async throws -> URL {
+        guard isOwner else { throw FamilyError.denied }
         let shareID = CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: zone)
         let share: CKShare
         do {
@@ -39,8 +45,8 @@ struct CloudBucket: ObjectBucket {
             share = existing
         } catch let error as CKError where error.code == .unknownItem { share = CKShare(recordZoneID: zone) }
         share.publicPermission = .none
-        let participant = try await container.shareParticipant(forEmailAddress: email)
-        participant.permission = write ? .readWrite : .readOnly
+        let existing = share.participants.first { $0.userIdentity.userRecordID == participant.userIdentity.userRecordID }
+        participant.permission = write || (preserveWrite && existing?.permission == .readWrite) ? .readWrite : .readOnly
         share.addParticipant(participant)
         guard let saved = try await database.save(share) as? CKShare, let url = saved.url else { throw FamilyError.policy }
         return url

@@ -20,6 +20,56 @@ class VaultTestCase: XCTestCase {
 }
 
 final class StoreTests: VaultTestCase {
+    func testDocumentSortFieldsInBothDirections() {
+        func row(_ name: String, _ day: Double?, _ size: Int64) -> ListedDocument {
+            let id = UUID()
+            return ListedDocument(lineage: id, created: day.map(Date.init(timeIntervalSince1970:)),
+                                  id: id, labels: Labels(name: name), size: size)
+        }
+        let a = row("Note 2", 30, 3), b = row("Note 10", 10, 500), c = row("Projet", 20, 1)
+        let rows = [b, a, c]
+        for (field, expected): (DocumentSortField, [ListedDocument]) in [
+            (.name, [a, b, c]), (.date, [b, c, a]), (.size, [c, a, b])
+        ] {
+            XCTAssertEqual(field.sorted(rows, ascending: true), expected)
+            XCTAssertEqual(field.sorted(rows, ascending: false), Array(expected.reversed()))
+        }
+        let undated = row("Ancien", nil, 3)
+        for ascending in [true, false] {
+            XCTAssertEqual(DocumentSortField.date.sorted([undated, a], ascending: ascending).last, undated)
+        }
+        XCTAssertEqual(DocumentSortField.size.sorted([a, undated], ascending: true), [undated, a])
+    }
+
+    func testHistorySelectsSuccessorWhenDeviceClocksDisagree() {
+        let original = UUID(), child = UUID()
+        let labels = Labels(name: "Note.txt")
+        let first = ListedDocument(lineage: original, created: .now, id: original, labels: labels, size: 1)
+        let next = ListedDocument(parent: original, lineage: original, created: .distantPast, id: child, labels: labels, size: 1)
+        for rows in [[first, next], [next, first]] {
+            let library = VaultLibrary(documents: rows)
+            XCTAssertEqual(library.documents.map(\.id), [child])
+            XCTAssertEqual(library.versions(of: original).map(\.id), [child, original])
+        }
+    }
+
+    func testDeletingFolderCleansOnlyHistoriesOfItsVisibleDocuments() async throws {
+        let store = try VaultStore(root: location("dossiers"), keys: VaultKeys(), create: true)
+        let folder = try await store.createFolder("Archives")
+        let a = try await store.importData(Data([1]), name: "A.txt")
+        let b = try await store.importData(Data([2]), name: "B.txt", folder: folder)
+        let newA = try await store.importData(Data([3]), name: "A.txt", versionOf: a)
+        let newB = try await store.importData(Data([4]), name: "B.txt", versionOf: b)
+        try await store.moveDocument(newA, to: folder)
+        try await store.moveDocument(newB, to: "")
+        try await store.deleteFolder(folder)
+        let library = try await store.library()
+        XCTAssertEqual(library.documents.map(\.id), [newB])
+        XCTAssertTrue(library.folders.isEmpty)
+        XCTAssertTrue(library.versions(of: a).isEmpty)
+        XCTAssertEqual(library.versions(of: b).map(\.id), [newB, b])
+    }
+
     func testThumbnailFromEncryptedPhotoIsDownsampledAndRequiresOpenVault() async throws {
         let store = try VaultStore(root: location("vignettes"), keys: VaultKeys(), create: true)
         let context = try XCTUnwrap(CGContext(data: nil, width: 960, height: 480, bitsPerComponent: 8,

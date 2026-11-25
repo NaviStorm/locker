@@ -1,5 +1,11 @@
 import AuthenticationServices
 import SwiftUI
+#if os(iOS)
+import UIKit
+import UniformTypeIdentifiers
+#else
+import AppKit
+#endif
 
 struct SettingsScreen: View {
     @Bindable var model: LockerModel
@@ -9,6 +15,7 @@ struct SettingsScreen: View {
     @State private var vaultName: String
     @State private var nameError: String?
     @State private var protectionError: String?
+    @State private var secretChange: SecretChange?
     @State private var password = ""
     @State private var savedPasswordFor: ProviderSettings?
     @State private var editingPassword = false
@@ -18,6 +25,9 @@ struct SettingsScreen: View {
     @State private var sharing = false
     @State private var family = false
     @State private var rotate = false
+    @State private var removal: String?
+    @State private var protectionReason: String?
+    @State private var removalChecked = false
     private static var dropboxKey: String {
         Bundle.main.object(forInfoDictionaryKey: "LockerDropboxKey") as? String ?? ""
     }
@@ -50,6 +60,10 @@ struct SettingsScreen: View {
                         get: { model.requiresAuthentication },
                         set: { value in
                             protectionError = nil
+                            if model.authenticationMethod.isCustom && !value {
+                                secretChange = .disable
+                                return
+                            }
                             Task {
                                 do { try await model.setAuthenticationRequired(value) }
                                 catch { protectionError = error.localizedDescription }
@@ -59,17 +73,27 @@ struct SettingsScreen: View {
                     .disabled(model.changingProtection)
                     AuthenticationMethodPicker(selection: Binding(
                         get: { model.authenticationMethod },
-                        set: { model.rememberAuthenticationMethod($0) }
+                        set: { target in
+                            if target.isCustom || model.authenticationMethod.isCustom {
+                                secretChange = .method(target)
+                            } else { model.rememberAuthenticationMethod(target) }
+                        }
                     ))
                     .disabled(model.changingProtection)
+                    if model.authenticationMethod.isCustom {
+                        Button(model.authenticationMethod == .numericCode ? "Modifier le code numérique…" : "Modifier le mot de passe…") {
+                            secretChange = .method(model.authenticationMethod)
+                        }
+                    }
                     if let protectionError { Text(protectionError).foregroundStyle(.red) }
                     Text("Si vous désactivez l’authentification, toute personne utilisant l’appareil déverrouillé pourra l’ouvrir.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Picker("Verrouillage après inactivité", selection: $model.timeout) {
                         ForEach([30, 60, 120, 300, 900], id: \.self) { Text($0 < 60 ? "30 secondes" : "\($0 / 60) min").tag($0) }
                     }
-                    if let code { Text(code).font(.system(.body, design: .monospaced)) }
-                    else {
+                    if let code {
+                        RecoveryCodeRow(code: code)
+                    } else {
                         Button("Afficher le code de récupération") {
                             model.perform { store in code = try await store.recoveryCode() }
                         }
@@ -79,6 +103,10 @@ struct SettingsScreen: View {
                         Button("Renouveler mon coffre personnel…") { rotate = true }
                         Button("Mes appareils") { sharing = true }
                     }
+                }
+                Section("Documents") {
+                    NavigationLink("Sauvegarde et restauration") { BackupScreen(model: model) }
+                    NavigationLink("Corbeille") { TrashScreen(model: model) }
                 }
                 Section("Synchronisation de ce coffre") {
                     Picker("Fournisseur", selection: $draft.provider) {
@@ -114,19 +142,42 @@ struct SettingsScreen: View {
                     }.disabled(busy)
                     if model.configuration.provider != .local {
                         Button("Synchroniser maintenant") { model.sync() }.disabled(model.syncing)
-                        Text(model.syncing ? "Synchronisation en cours…" : model.syncStatus).font(.footnote)
+                        VaultSyncStatus(model: model)
                     }
                     if !errorText.isEmpty { Text(errorText).foregroundStyle(.red) }
                 }
+                AboutLockerSection()
+                Section {
+                    if let protectionReason {
+                        Label(protectionReason, systemImage: "person.2")
+                    } else if !removalChecked {
+                        Text("Vérification des droits du coffre…")
+                    } else {
+                        Button("Supprimer ce coffre de cet appareil…", role: .destructive) { removal = model.slot }
+                            .disabled(model.removingVault)
+                    }
+                }
             }.vaultFormStyle().navigationTitle("Réglages du coffre")
+            .modifier(LocalVaultRemovalDialog(model: model, request: $removal))
             .modifier(VaultDismissToolbar())
             .confirmationDialog("Créer un nouveau coffre avec de nouvelles clés et conserver l’ancien hors ligne ?", isPresented: $rotate) {
                 Button("Rechiffrer les documents") {
+                    if model.authenticationMethod.isCustom { secretChange = .rotate; return }
                     Task {
                         do { try await model.rotatePersonal(); dismiss() }
                         catch { errorText = error.localizedDescription }
                     }
                 }
+            }
+            .sheet(item: $secretChange) { change in
+                VaultSecretEditor(model: model, action: change)
+            }
+            .task(id: model.syncing) { await refreshProtection() }
+            .onChange(of: family) { _, visible in
+                if !visible { Task { await refreshProtection() } }
+            }
+            .onChange(of: model.configuration) { _, config in
+                if family { draft = config }
             }
             .onChange(of: draft.provider) { _, provider in
                 if provider == .dropbox && draft.appKey.isEmpty { draft.appKey = Self.dropboxKey }
@@ -149,6 +200,13 @@ struct SettingsScreen: View {
             .lockerPanel(isPresented: $family) { FamilyScreen(model: model) }
             .sheet(isPresented: $sharing) { IdentityScreen(model: model) }
         }.frame(idealWidth: 530, idealHeight: 520)
+    }
+
+    private func refreshProtection() async {
+        guard let store = model.store else { return }
+        do { protectionReason = try await store.removalProtectionReason() }
+        catch { protectionReason = error.localizedDescription }
+        removalChecked = true
     }
 
     private func save() {
@@ -177,6 +235,44 @@ struct SettingsScreen: View {
                     editingPassword = false
                 }
             } catch { errorText = error.localizedDescription }
+        }
+    }
+}
+
+private struct RecoveryCodeRow: View {
+    let code: String
+    @State private var copiedAt: Date?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(verbatim: code)
+                .font(.system(.body, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                #if os(iOS)
+                UIPasteboard.general.setItems([[UTType.utf8PlainText.identifier: code]], options: [.localOnly: true])
+                #else
+                let clipboard = NSPasteboard.general
+                clipboard.prepareForNewContents(with: .currentHostOnly)
+                guard clipboard.setString(code, forType: .string) else { return }
+                #endif
+                copiedAt = .now
+            } label: {
+                Label("Copier le code de récupération", systemImage: copiedAt == nil ? "doc.on.doc" : "checkmark")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .help("Copier le code de récupération")
+            .accessibilityValue(copiedAt == nil ? "" : "Copié")
+        }
+        .task(id: copiedAt) {
+            guard copiedAt != nil else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copiedAt = nil
         }
     }
 }

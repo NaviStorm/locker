@@ -10,13 +10,20 @@ struct LibraryScreen: View {
     @State private var category = ""
     @State private var selection: UUID?
     @AppStorage("libraryShowsThumbnails") private var showsThumbnails = false
+    @AppStorage("libraryDocumentSortField") private var sortField = DocumentSortField.name
+    @AppStorage("libraryDocumentSortAscending") private var sortAscending = true
     @State private var selectingDocuments = false
     @State private var marked = Set<UUID>()
     @State private var moving = false
     #if os(macOS)
     @State private var showSidebar = true
     #endif
+    #if os(iOS)
+    @State private var familySharing = false
+    #endif
+    @State private var resumedNearby: NearbyRole?
     @State private var settings = false
+    @State private var showTrash = false
     @State private var importer = false
     @State private var versionImporter = false
     @State private var renamingFolder: String?
@@ -39,6 +46,12 @@ struct LibraryScreen: View {
                     .contains { $0.localizedStandardContains(query) })
         }
     }
+    private var orderedDocuments: [ListedDocument] {
+        // The catalogue already supplies documents in ascending name order.
+        if sortField == .name && sortAscending { return filtered }
+        return sortField.sorted(filtered, ascending: sortAscending)
+    }
+
     private var subfolders: [String] { model.library.subfolders(in: folder) }
     private var showsFolders: Bool {
         query.isEmpty && category.isEmpty && !subfolders.isEmpty
@@ -68,7 +81,7 @@ struct LibraryScreen: View {
             }
             if !filtered.isEmpty {
                 Section("Documents") {
-                    ForEach(filtered) { item in
+                    ForEach(orderedDocuments) { item in
                         if selectingDocuments {
                             markButton(item) { documentRow(item) }
                         } else {
@@ -127,8 +140,10 @@ struct LibraryScreen: View {
         .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
         .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
         .onChange(of: folder) { category = ""; query = ""; marked.removeAll(); selectingDocuments = false }
-        .onChange(of: selectedDocument?.id) { _, id in
-            if id == nil { selection = nil }
+        .onChange(of: folderDocuments) { previous, current in
+            guard let id = selection, !current.contains(where: { $0.id == id }),
+                  let old = previous.first(where: { $0.id == id }) else { return }
+            selection = current.first { $0.lineage == old.lineage }?.id
         }
         #if os(iOS)
         .toolbar {
@@ -139,7 +154,7 @@ struct LibraryScreen: View {
             ToolbarItemGroup {
                 Menu {
                     importButton
-                    if ScanScreen.supported {
+                    if CaptureSource.document.available {
                         Button("Numériser", systemImage: "document.viewfinder") { scanner = true }
                     }
                 } label: { Label("Ajouter", systemImage: "plus") }
@@ -148,12 +163,33 @@ struct LibraryScreen: View {
                     categoryPicker
                 } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
                 Menu {
+                    trashButton
+                    Button("Partage familial", systemImage: "person.2") { familySharing = true }
                     settingsButton
                     lockButton
                 } label: { Label("Coffre", systemImage: "lock.shield") }
             }
         }
         #endif
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            Picker("Trier par", selection: $sortField) {
+                Text("Nom").tag(DocumentSortField.name)
+                Text("Date de la version").tag(DocumentSortField.date)
+                Text("Taille").tag(DocumentSortField.size)
+            }.pickerStyle(.inline)
+            Divider()
+            Picker("Ordre", selection: $sortAscending) {
+                Text("Croissant").tag(true)
+                Text("Décroissant").tag(false)
+            }.pickerStyle(.inline)
+        } label: {
+            Label("Trier les documents", systemImage: "arrow.up.arrow.down")
+        }
+        .labelStyle(.iconOnly)
+        .help("Trier les documents")
     }
 
     private var collectionControls: some View {
@@ -164,6 +200,9 @@ struct LibraryScreen: View {
             }
             .pickerStyle(.segmented).labelStyle(.iconOnly).labelsHidden()
             .frame(width: 92)
+            #if os(iOS)
+            sortMenu
+            #endif
             Spacer()
             Button(selectingDocuments ? "Annuler" : "Sélectionner") {
                 selection = nil
@@ -191,7 +230,7 @@ struct LibraryScreen: View {
                         }.contextMenu { folderActions(name) }
                     }
                 }
-                ForEach(filtered) { item in
+                ForEach(orderedDocuments) { item in
                     let tile = DocumentTile(item: item, store: model.store)
                     if selectingDocuments {
                         markButton(item) { tile }
@@ -371,25 +410,46 @@ struct LibraryScreen: View {
         .confirmationDialog("Supprimer le dossier « \(deletingFolder ?? "") » ?", isPresented: Binding(
             get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }),
             titleVisibility: .visible, presenting: deletingFolder) { name in
-            Button("Supprimer le dossier et son contenu", role: .destructive) {
+            Button("Mettre le dossier à la corbeille", role: .destructive) {
                 model.perform { store in
                     try await store.deleteFolder(name)
                     if folder == name || folder.hasPrefix(name + "/") { folder = VaultLibrary.parent(of: name); selection = nil }
                 }
             }
             Button("Annuler", role: .cancel) {}
-        } message: { _ in Text("Les documents, leurs versions et les sous-dossiers de cet emplacement seront supprimés.") }
+        } message: { _ in Text("Les documents, leurs versions et les sous-dossiers pourront être restaurés depuis la corbeille.") }
+        .lockerPanel(isPresented: $showTrash) {
+            NavigationStack { TrashScreen(model: model).modifier(VaultDismissToolbar()) }
+                .frame(idealWidth: 500, idealHeight: 460)
+        }
         .lockerPanel(isPresented: $settings) { SettingsScreen(model: model) }
         .sheet(isPresented: $scanner) {
-            ScanScreen { result in
-                scanner = false
-                switch result {
-                case let .success(scan): model.perform { _ = try await $0.importData(scan.bytes, name: scan.name, folder: folder) }
-                case let .failure(error): model.problem = error.localizedDescription
-                }
-            } cancel: { scanner = false }
+            #if os(iOS)
+            let source = CaptureSource.document
+            #else
+            let source = CaptureSource.photo
+            #endif
+            if let store = model.store {
+                CaptureScreen(source: source) { result in
+                    guard model.store === store else { return }
+                    scanner = false
+                    switch result {
+                    case let .success(scan): model.perform { _ = try await $0.importData(scan.bytes, name: scan.name, folder: folder) }
+                    case let .failure(error): model.problem = error.localizedDescription
+                    }
+                } cancel: { scanner = false }
+            }
         }
-        .sheet(isPresented: Binding(get: { model.recovery != nil }, set: { if !$0 { model.recovery = nil } })) {
+        #if os(iOS)
+        .lockerPanel(isPresented: $familySharing) { FamilyScreen(model: model) }
+        .sheet(item: $resumedNearby) { role in
+            if let store = model.store { NearbyFamilyScreen(model: model, role: role, store: store) }
+        }
+        #endif
+        .sheet(isPresented: Binding(get: { model.recovery != nil }, set: { if !$0 { model.recovery = nil } }), onDismiss: {
+            resumedNearby = model.pendingNearbyRole
+            model.pendingNearbyRole = nil
+        }) {
             VStack(alignment: .leading, spacing: 18) {
                 Label("Code de récupération", systemImage: "key").font(.title2.bold())
                 Text("Recopiez ce code et conservez-le en lieu sûr. Il donne accès aux copies chiffrées de ce coffre.")
@@ -409,16 +469,16 @@ struct LibraryScreen: View {
         }
         .confirmationDialog("Supprimer « \(pendingDelete?.labels.name ?? "") » ?", isPresented: Binding(get: { pendingDelete != nil },
             set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible, presenting: pendingDelete) { item in
-            Button("Supprimer", role: .destructive) {
+            Button("Mettre à la corbeille", role: .destructive) {
                 model.perform { store in
-                    try await store.change(item.id, labels: nil)
+                    try await store.trashDocument(item.id)
                     if selection == item.id { selection = nil }
                 }
             }
             Button("Annuler", role: .cancel) {}
         } message: { item in
-            if model.documents.contains(where: { $0.lineage == item.lineage && $0.id != item.id }) {
-                Text("La suppression concerne uniquement la version sélectionnée.")
+            if model.library.versions(of: item.lineage).count > 1 {
+                Text("Le document et toutes ses versions seront placés dans la corbeille.")
             }
         }
     }
@@ -432,6 +492,7 @@ struct LibraryScreen: View {
                 importButton
                 Button("Photographier un document", systemImage: "camera") { scanner = true }
                     .help("Photographier un document")
+                    .disabled(!CaptureSource.photo.available)
                 Divider()
                 Menu {
                     folderPicker.pickerStyle(.inline)
@@ -441,7 +502,9 @@ struct LibraryScreen: View {
                     categoryPicker.pickerStyle(.inline)
                 } label: { Label("Filtrer par catégorie", systemImage: "line.3.horizontal.decrease") }
                 .help(category.isEmpty ? "Filtrer par catégorie" : "Catégorie : \(category)")
+                sortMenu
                 Spacer(minLength: 8)
+                trashButton
                 settingsButton
                 lockButton
             }
@@ -491,6 +554,10 @@ struct LibraryScreen: View {
         Button("Importer un fichier", systemImage: "doc.badge.plus") { importer = true }
             .help("Importer un fichier")
             .disabled(model.extracting)
+    }
+
+    private var trashButton: some View {
+        Button("Ouvrir la corbeille", systemImage: "trash") { showTrash = true }.help("Ouvrir la corbeille")
     }
 
     private var settingsButton: some View {

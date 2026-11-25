@@ -66,6 +66,57 @@ final class SyncTests: VaultTestCase {
         XCTAssertNil(deleted?.file)
     }
 
+    func testVersionHistoryRestoreAndCleanupOfflineAndAfterSync() async throws {
+        let keys = VaultKeys()
+        let root = location("versions")
+        let store = try VaultStore(root: root, keys: keys, create: true)
+        let peer = try VaultStore(root: location("copie"), keys: keys, create: true)
+        let replica = MemoryReplica(root: location("."))
+        let folder = try await store.createFolder("Voyages")
+        let original = try await store.importData(Data([1]), name: "photo.png")
+        let unrelated = try await store.importData(Data([9]), name: "photo.png")
+        let second = try await store.importData(Data([2]), name: "retouche.png", versionOf: original)
+        try await store.moveDocument(second, to: folder)
+        let third = try await store.importData(Data([3]), name: "retouche.png", versionOf: second)
+        let before = try await store.library()
+        XCTAssertEqual(before.documents(in: "").map(\.id), [unrelated])
+        XCTAssertEqual(before.documents(in: folder).map(\.id), [third])
+        XCTAssertEqual(before.versions(of: original).map(\.id), [third, second, original])
+        try await store.synchronize(with: replica)
+        try await peer.synchronize(with: replica)
+
+        let restored = try await store.restoreVersion(original, current: third)
+        let bytes = try await store.preview(restored)
+        XCTAssertEqual(bytes, Data([1]))
+        let after = try await store.library()
+        XCTAssertEqual(after.documents(in: folder).map(\.id), [restored])
+        XCTAssertEqual(after.versions(of: original).map(\.id), [restored, third, second, original])
+        for invalid in [[restored, original], [unrelated, original]] {
+            do { try await store.deleteVersions(Set(invalid), current: restored); XCTFail("Suppression invalide acceptée") }
+            catch is TransportError {}
+        }
+        do { try await store.deleteVersions([original], current: third); XCTFail("Historique périmé accepté") }
+        catch is TransportError {}
+        try await store.deleteVersions([second], current: restored)
+        let partial = try await store.library()
+        XCTAssertEqual(partial.versions(of: original).map(\.id), [restored, third, original])
+        try await store.deleteVersions([third, original], current: restored)
+        let reopened = try VaultStore(root: root, keys: keys)
+        let clean = try await reopened.library()
+        XCTAssertEqual(clean.versions(of: original).map(\.id), [restored])
+        XCTAssertEqual(clean.documents(in: "").map(\.id), [unrelated])
+        try await reopened.synchronize(with: replica)
+        try await peer.synchronize(with: replica)
+        let synced = try await peer.library()
+        XCTAssertEqual(synced.versions(of: original), clean.versions(of: original))
+        let syncedBytes = try await peer.preview(restored)
+        XCTAssertEqual(syncedBytes, bytes)
+        for id in [original, second, third] {
+            do { _ = try await peer.preview(id); XCTFail("Une version supprimée reste lisible") }
+            catch VaultError.unavailable {}
+        }
+    }
+
     func testFoldersSurviveOfflineReopeningAndSync() async throws {
         let keys = VaultKeys()
         let root = location("origine")
@@ -81,7 +132,7 @@ final class SyncTests: VaultTestCase {
         let version = try await store.importFile(source, versionOf: scan)
         let imported = try await store.importCoordinated(source, parent: nil, folder: name)
         let library = try await store.library()
-        XCTAssertEqual(library.documents.map(\.labels.folder), [name, name, name])
+        XCTAssertEqual(library.documents.map(\.labels.folder), [name, name])
         try await store.change(scan, labels: Labels(name: "scan", folder: "Ancien classement"))
         try await store.change(version, labels: nil)
         try await store.change(imported, labels: nil)
