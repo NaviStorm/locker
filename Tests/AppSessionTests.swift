@@ -122,6 +122,76 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @Observable fileprivate final class ReaderPresentation {
+        var expanded = false
+        var unlocked = true
+    }
+
+    @MainActor func testFullScreenReaderKeepsPDFPageAndClosesWithVault() async throws {
+        let state = ReaderPresentation()
+        let data = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 240, height: 400))
+            .pdfData { renderer in
+                for index in 1...4 {
+                    renderer.beginPage()
+                    ("Page " + String(index) as NSString).draw(at: CGPoint(x: 10, y: 10), withAttributes: nil)
+                }
+            }
+        struct Fixture: View {
+            @Bindable var state: ReaderPresentation
+            let data: Data
+
+            var body: some View {
+                if state.unlocked {
+                    HStack(spacing: 0) {
+                        Color.gray.frame(width: 110)
+                        ExpandableDocumentReader(expanded: $state.expanded) {
+                            DocumentPreview(data: data, name: "Exemple.pdf")
+                        }
+                    }
+                } else { Text("Coffre verrouillé") }
+            }
+        }
+
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let fixture = UIHostingController(rootView: Fixture(state: state, data: data))
+        fixture.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(fixture, animated: false) { done.resume() } }
+        defer { fixture.dismiss(animated: false) }
+
+        func pdf(in view: UIView) -> PDFView? {
+            if let pdf = view as? PDFView { return pdf }
+            return view.subviews.lazy.compactMap { pdf(in: $0) }.first
+        }
+
+        func waitFor(line: Int = #line, _ condition: () -> Bool) async throws {
+            for _ in 0..<60 {
+                if condition() { return }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            throw TransportError(message: "Transition du lecteur PDF inachevée à la ligne \(line).")
+        }
+
+        try await waitFor { pdf(in: fixture.view)?.document != nil }
+        let original = try XCTUnwrap(pdf(in: fixture.view))
+        let page = try XCTUnwrap(original.document?.page(at: 2))
+        original.go(to: page)
+        let initialWidth = original.bounds.width
+        state.expanded = true
+        try await waitFor {
+            guard let modal = fixture.presentedViewController else { return false }
+            return pdf(in: modal.view) === original && original.bounds.width > initialWidth + 50
+        }
+        XCTAssertTrue(original.currentPage === page)
+        state.expanded = false
+        try await waitFor { fixture.presentedViewController == nil && pdf(in: fixture.view) === original }
+        XCTAssertTrue(original.currentPage === page)
+        state.expanded = true
+        try await waitFor { fixture.presentedViewController != nil }
+        state.unlocked = false
+        try await waitFor { fixture.presentedViewController == nil && pdf(in: fixture.view) == nil }
+    }
+
     @MainActor func testDuoFinderPlacesRootDocumentsBesideFolders() async throws {
         guard #available(iOS 27.1, *) else { throw XCTSkip("Nécessite iOS 27.1.") }
         let model = LockerModel(base: location("bibliotheque"))
