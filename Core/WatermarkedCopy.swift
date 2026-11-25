@@ -35,10 +35,14 @@ extension VaultStore {
                     original = try Self.flatten(annotated, size: size)
                 } else { original = try await pdf.render(page) }
             } else {
-                original = try await photoEditingPreview(item.id, maxPixelSize: 3200)
-                size = CGSize(width: original.width, height: original.height)
-                let scale = min(1, 842 / max(size.width, size.height))
-                size = CGSize(width: size.width * scale, height: size.height * scale)
+                let photo = try await photoPrintPreview(item.id, maxPixelSize: 3200)
+                original = photo.image
+                if let physical = photo.physicalSize { size = physical }
+                else {
+                    let pixels = CGSize(width: original.width, height: original.height)
+                    let scale = min(1, 842 / max(pixels.width, pixels.height))
+                    size = CGSize(width: pixels.width * scale, height: pixels.height * scale)
+                }
             }
             try autoreleasepool {
                 let stamped = try Self.stamp(original, message: mark)

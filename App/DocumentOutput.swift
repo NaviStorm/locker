@@ -29,12 +29,12 @@ struct OriginalDocumentShare: Transferable {
 
 @MainActor
 final class DocumentPrinter {
-    func presentOriginal(_ item: ListedDocument, from store: VaultStore, onError: @escaping (Error) -> Void) async {
+    func presentOriginal(_ item: ListedDocument, from store: VaultStore, size: DocumentPrintSize, onError: @escaping (Error) -> Void) async {
         do {
             let bytes = try await store.originalForOutput(item.id)
             try Task.checkCancellation()
             try store.gate.check()
-            try present(bytes, name: item.labels.name, onError: onError)
+            try present(bytes, name: item.labels.name, size: size, onError: onError)
         } catch {
             if !Task.isCancelled, (try? store.gate.check()) != nil { onError(error) }
         }
@@ -44,7 +44,7 @@ final class DocumentPrinter {
     weak var anchor: UIView?
     private var active: UIPrintInteractionController?
 
-    func present(_ bytes: Data, name: String, onError: @escaping (Error) -> Void) throws {
+    func present(_ bytes: Data, name: String, size: DocumentPrintSize, onError: @escaping (Error) -> Void) throws {
         guard let anchor, anchor.window != nil else { throw VaultError.unavailable }
         let controller = UIPrintInteractionController.shared
         let info = UIPrintInfo(dictionary: nil)
@@ -53,12 +53,12 @@ final class DocumentPrinter {
         controller.printInfo = info
         controller.printFormatter = nil
         controller.printingItem = nil
-        if UIPrintInteractionController.canPrint(bytes) { controller.printingItem = bytes }
-        else if let image = UIImage(data: bytes) { controller.printingItem = image }
-        else { throw TransportError(message: "Ce format ne peut pas être imprimé sur cet appareil.") }
+        let document = try PrintDocument(bytes)
+        try document.validate(size)
+        controller.printPageRenderer = SizedPageRenderer(document: document, size: size)
         active = controller
         let finished: UIPrintInteractionController.CompletionHandler = { [weak self] controller, _, error in
-            controller.printingItem = nil
+            controller.printPageRenderer = nil
             self?.active = nil
             if let error { onError(error) }
         }
@@ -72,21 +72,21 @@ final class DocumentPrinter {
 
     func cancel() {
         active?.dismiss(animated: false)
-        active?.printingItem = nil
+        active?.printPageRenderer = nil
         active = nil
     }
     #else
     weak var anchor: NSView?
     private weak var printSheet: NSWindow?
-    func present(_ bytes: Data, name: String, onError: @escaping (Error) -> Void) throws {
+    func present(_ bytes: Data, name: String, size: DocumentPrintSize, onError: @escaping (Error) -> Void) throws {
         guard let window = anchor?.window else { throw VaultError.unavailable }
-        let document: PDFDocument
-        if let pdf = PDFDocument(data: bytes), pdf.pageCount > 0 { document = pdf }
-        else if let image = NSImage(data: bytes), let page = PDFPage(image: image) {
-            document = PDFDocument()
-            document.insert(page, at: 0)
-        } else { throw TransportError(message: "Ce format ne peut pas être imprimé sur ce Mac.") }
-        guard let operation = document.printOperation(for: .shared, scalingMode: .pageScaleToFit, autoRotate: true)
+        let document = try PrintDocument(bytes).documentForPrinting(size)
+        let info = NSPrintInfo.shared.copy() as! NSPrintInfo
+        info.scalingFactor = 1
+        info.isHorizontallyCentered = true
+        info.isVerticallyCentered = true
+        guard let operation = document.printOperation(for: info,
+            scalingMode: size == .fit ? .pageScaleToFit : .pageScaleNone, autoRotate: true)
         else { throw VaultError.unavailable }
         operation.jobTitle = name
         let previous = window.attachedSheet
@@ -102,6 +102,27 @@ final class DocumentPrinter {
 }
 
 #if os(iOS)
+final class SizedPageRenderer: UIPrintPageRenderer {
+    let document: PrintDocument
+    let size: DocumentPrintSize
+    init(document: PrintDocument, size: DocumentPrintSize) {
+        self.document = document
+        self.size = size
+        super.init()
+    }
+    override var numberOfPages: Int { document.pages }
+
+    override func drawContentForPage(at pageIndex: Int, in contentRect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let rect = document.target(page: pageIndex, mode: size, printable: contentRect)
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.clip(to: contentRect)
+        context.translateBy(x: rect.minX, y: rect.maxY)
+        context.scaleBy(x: 1, y: -1)
+        document.draw(page: pageIndex, in: CGRect(origin: .zero, size: rect.size), context: context)
+    }
+}
 struct DocumentPrintAnchor: UIViewRepresentable {
     let printer: DocumentPrinter
     func makeUIView(context: Context) -> UIView {
@@ -126,3 +147,16 @@ struct DocumentPrintAnchor: NSViewRepresentable {
     static func dismantleNSView(_ view: NSView, coordinator: DocumentPrinter) { coordinator.cancel() }
 }
 #endif
+
+struct PrintSizeMenu: View {
+    let title: String
+    let select: (DocumentPrintSize) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(DocumentPrintSize.allCases, id: \.self) { size in
+                Button(size.title) { select(size) }
+            }
+        } label: { Label(title, systemImage: "printer") }
+    }
+}

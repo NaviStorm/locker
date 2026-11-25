@@ -9,7 +9,7 @@ struct DocumentScreen<Actions: View>: View {
     let addVersion: () -> Void
     let actions: Actions
     @State private var printer = DocumentPrinter()
-    @State private var preparingPrint = false
+    @State private var preparingPrint: DocumentPrintSize?
     @State private var editing = false
     @State private var editingPhoto = false
     @State private var showVersions = false
@@ -34,8 +34,8 @@ struct DocumentScreen<Actions: View>: View {
                             Label("Partager l’original", systemImage: "square.and.arrow.up")
                         }
                         if item.supportsWatermark {
-                            Button("Imprimer l’original…", systemImage: "printer") { preparingPrint = true }
-                                .disabled(preparingPrint)
+                            PrintSizeMenu(title: "Imprimer l’original…") { preparingPrint = $0 }
+                                .disabled(preparingPrint != nil)
                             Button("Partager avec un filigrane…", systemImage: "textformat") { watermarking = true }
                         }
                     } label: { Label("Partager", systemImage: "square.and.arrow.up") }
@@ -55,9 +55,9 @@ struct DocumentScreen<Actions: View>: View {
             }
         }
         .task(id: preparingPrint) {
-            guard preparingPrint, let store = model.store else { return }
-            defer { preparingPrint = false }
-            await printer.presentOriginal(item, from: store) { error in
+            guard let size = preparingPrint, let store = model.store else { return }
+            defer { preparingPrint = nil }
+            await printer.presentOriginal(item, from: store, size: size) { error in
                 if model.store === store { model.problem = error.localizedDescription }
             }
         }

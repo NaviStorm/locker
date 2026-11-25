@@ -127,6 +127,84 @@ final class DocumentToolsTests: VaultTestCase {
         XCTAssertEqual(list.count, 2)
     }
 
+    @MainActor func testPrintCardAndActualSizeAreIndependentOfPaperSize() throws {
+        let card = CGSize(width: 85.60 * 72 / 25.4, height: 53.98 * 72 / 25.4)
+        let bytes = NSMutableData()
+        var box = CGRect(origin: .zero, size: card)
+        let writer = try XCTUnwrap(CGContext(consumer: XCTUnwrap(CGDataConsumer(data: bytes)), mediaBox: &box, nil))
+        for factor: CGFloat in [1, 3] {
+            var page = CGRect(x: 0, y: 0, width: card.width * factor, height: card.height * factor)
+            writer.beginPDFPage([kCGPDFContextMediaBox: Data(bytes: &page, count: MemoryLayout<CGRect>.size)] as CFDictionary)
+            writer.setFillColor(gray: 0, alpha: 1)
+            writer.fill(page)
+            writer.endPDFPage()
+        }
+        writer.closePDF()
+        let document = try PrintDocument(bytes as Data)
+        for paper in [CGRect(x: 12, y: 15, width: 571, height: 812), CGRect(x: 17, y: 19, width: 560, height: 744)] {
+            let original = document.target(page: 0, mode: .actual, printable: paper)
+            XCTAssertEqual(original.width, card.width, accuracy: 0.01)
+            XCTAssertEqual(original.height, card.height, accuracy: 0.01)
+            for index in 0..<2 {
+                let rect = document.target(page: index, mode: .card, printable: paper)
+                XCTAssertEqual(rect.size.width, card.width, accuracy: 0.01)
+                XCTAssertEqual(rect.size.height, card.height, accuracy: 0.01)
+                XCTAssertEqual(rect.midX, paper.midX, accuracy: 0.001)
+                XCTAssertEqual(rect.midY, paper.midY, accuracy: 0.001)
+            }
+            XCTAssertGreaterThan(document.target(page: 0, mode: .fit, printable: paper).width, card.width)
+        }
+        #if os(macOS)
+        let output = try document.documentForPrinting(.card)
+        for index in 0..<2 {
+            let bounds = try XCTUnwrap(output.page(at: index)).bounds(for: .mediaBox)
+            XCTAssertEqual(bounds.width, card.width, accuracy: 0.01)
+            XCTAssertEqual(bounds.height, card.height, accuracy: 0.01)
+        }
+        #elseif !SWIFT_PACKAGE
+        let paper = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let output = UIGraphicsPDFRenderer(bounds: paper).pdfData { renderer in
+            renderer.beginPage()
+            SizedPageRenderer(document: document, size: .card).drawContentForPage(at: 1, in: paper)
+        }
+        let page = try XCTUnwrap(CGPDFDocument(XCTUnwrap(CGDataProvider(data: output as CFData)))?.page(at: 1))
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 595, height: 842, bitsPerComponent: 8, bytesPerRow: 595,
+                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue))
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.fill(paper)
+        ctx.drawPDFPage(page)
+        let pixels = try XCTUnwrap(ctx.data).assumingMemoryBound(to: UInt8.self)
+        let width = (0..<595).filter { pixels[421 * 595 + $0] < 128 }.count
+        let height = (0..<842).filter { pixels[$0 * 595 + 297] < 128 }.count
+        XCTAssertEqual(CGFloat(width), card.width, accuracy: 1.1)
+        XCTAssertEqual(CGFloat(height), card.height, accuracy: 1.1)
+        #endif
+    }
+
+    func testPhotoPrintSizeRespectsDPIAndOrientation() {
+        let properties: [CFString: Any] = [kCGImagePropertyPixelWidth: 1200, kCGImagePropertyPixelHeight: 600,
+            kCGImagePropertyDPIWidth: 300, kCGImagePropertyDPIHeight: 300, kCGImagePropertyOrientation: 6]
+        XCTAssertEqual(PrintDocument.physicalPhotoSize(properties), CGSize(width: 144, height: 288))
+        XCTAssertNil(PrintDocument.physicalPhotoSize([kCGImagePropertyPixelWidth: 1200, kCGImagePropertyPixelHeight: 600]))
+    }
+
+    func testWatermarkedPhotoPreservesPrintResolution() async throws {
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try scan(),
+            [kCGImagePropertyDPIWidth: 300, kCGImagePropertyDPIHeight: 300] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let store = try VaultStore(root: location("photos"), keys: VaultKeys(), create: true)
+        _ = try await store.importData(data as Data, name: "Carte.jpg")
+        let list = try await store.list()
+        let output = try await store.watermarkedCopy(of: XCTUnwrap(list.first), message: "TEST")
+        let original = try PrintDocument(data as Data)
+        try original.validate(.actual)
+        let size = try PrintDocument(output).sourceSize(page: 0)
+        XCTAssertEqual(size.width, 900 * 72.0 / 300, accuracy: 0.01)
+        XCTAssertEqual(size.height, 320 * 72.0 / 300, accuracy: 0.01)
+    }
+
     func testWatermarkKeepsA4ContentAtItsOriginalScale() async throws {
         let bytes = NSMutableData()
         var paper = CGRect(x: 0, y: 0, width: 595, height: 842)

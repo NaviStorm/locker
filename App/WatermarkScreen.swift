@@ -18,42 +18,56 @@ struct WatermarkScreen: View {
     @State private var problem: String?
     @State private var expanded = false
     @State private var printer = DocumentPrinter()
-    @State private var printingOriginal = false
+    @State private var printingOriginal: DocumentPrintSize?
+
+    @ViewBuilder private func reader(_ copy: WatermarkedPDF) -> some View {
+        let document = DocumentPreview(data: copy.bytes, name: copy.name)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.lockerCanvas)
+        #if os(iOS)
+        WatermarkReaderNavigation {
+            document
+        } actions: {
+            readerActions(copy)
+        }
+        #else
+        document.safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack { readerActions(copy) }
+                .labelStyle(.iconOnly).buttonStyle(.bordered).controlSize(.large)
+                .padding(6).frame(maxWidth: .infinity).background(.bar)
+        }
+        #endif
+    }
+
+    @ViewBuilder private func readerActions(_ copy: WatermarkedPDF) -> some View {
+        Button(expanded ? "Quitter le plein écran" : "Plein écran",
+               systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+            expanded.toggle()
+        }
+        Menu {
+            PrintSizeMenu(title: "Imprimer la copie avec filigrane") { size in
+                do {
+                    try store.gate.check()
+                    try printer.present(copy.bytes, name: copy.name, size: size) { problem = $0.localizedDescription }
+                } catch { problem = error.localizedDescription }
+            }
+            PrintSizeMenu(title: "Imprimer l’original") { printingOriginal = $0 }.disabled(printingOriginal != nil)
+        } label: { Label("Imprimer", systemImage: "printer") }
+        Menu {
+            ShareLink(item: copy, preview: SharePreview(copy.name)) {
+                Text("Partager la copie avec filigrane")
+            }
+            ShareLink(item: OriginalDocumentShare(store: store, item: item),
+                      preview: SharePreview(item.labels.name)) { Text("Partager l’original") }
+        } label: { Label("Partager", systemImage: "square.and.arrow.up") }
+    }
 
     var body: some View {
         NavigationStack {
             Group {
                 if let copy {
                     ExpandableDocumentReader(expanded: $expanded) {
-                        DocumentPreview(data: copy.bytes, name: copy.name)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color.lockerCanvas)
-                            .safeAreaInset(edge: .bottom, spacing: 0) {
-                                HStack {
-                                    Button(expanded ? "Quitter le plein écran" : "Plein écran",
-                                           systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
-                                        expanded.toggle()
-                                    }
-                                    Menu {
-                                        Button("Imprimer la copie avec filigrane") {
-                                            do {
-                                                try store.gate.check()
-                                                try printer.present(copy.bytes, name: copy.name) { problem = $0.localizedDescription }
-                                            } catch { problem = error.localizedDescription }
-                                        }
-                                        Button("Imprimer l’original") { printingOriginal = true }.disabled(printingOriginal)
-                                    } label: { Label("Imprimer", systemImage: "printer") }
-                                    Menu {
-                                        ShareLink(item: copy, preview: SharePreview(copy.name)) {
-                                            Text("Partager la copie avec filigrane")
-                                        }
-                                        ShareLink(item: OriginalDocumentShare(store: store, item: item),
-                                                  preview: SharePreview(item.labels.name)) { Text("Partager l’original") }
-                                    } label: { Label("Partager", systemImage: "square.and.arrow.up") }
-                                }
-                                .labelStyle(.iconOnly).buttonStyle(.bordered).controlSize(.large)
-                                .padding(6).frame(maxWidth: .infinity).background(.bar)
-                            }
+                        reader(copy)
                             .background(DocumentPrintAnchor(printer: printer))
                             .alert("Impression", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
                                 Button("Fermer") { problem = nil }
@@ -84,9 +98,9 @@ struct WatermarkScreen: View {
         }
         .frame(idealWidth: 560, idealHeight: 550)
         .task(id: printingOriginal) {
-            guard printingOriginal else { return }
-            await printer.presentOriginal(item, from: store) { problem = $0.localizedDescription }
-            printingOriginal = false
+            guard let size = printingOriginal else { return }
+            await printer.presentOriginal(item, from: store, size: size) { problem = $0.localizedDescription }
+            printingOriginal = nil
         }
         .onChange(of: message) { requested = nil; copy = nil; problem = nil }
         .task(id: requested) {
@@ -103,3 +117,27 @@ struct WatermarkScreen: View {
         }
     }
 }
+
+#if os(iOS)
+struct WatermarkReaderNavigation<Document: View, Actions: View>: View {
+    @ViewBuilder let document: () -> Document
+    @ViewBuilder let actions: () -> Actions
+
+    var body: some View {
+        // This navigation stack travels with the PDF when its hosting controller goes full screen.
+        NavigationStack {
+            document()
+                .toolbar(.hidden, for: .navigationBar)
+                .toolbar {
+                    if #available(iOS 27.1, *) {
+                        items.axisBehavior(.verticalPreferred)
+                    } else { items }
+                }
+        }
+    }
+
+    private var items: some ToolbarContent {
+        ToolbarItemGroup(placement: .bottomBar) { actions() }
+    }
+}
+#endif

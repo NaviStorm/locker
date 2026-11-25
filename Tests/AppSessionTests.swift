@@ -558,6 +558,77 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterRecovery, data)
     }
 
+    @MainActor func testWatermarkReaderUsesNativeToolbarOnDuo() async throws {
+        guard #available(iOS 27.1, *) else { throw XCTSkip("Nécessite iOS 27.1.") }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let data = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 300, height: 400)).pdfData {
+            $0.beginPage()
+            ("Document fictif" as NSString).draw(at: CGPoint(x: 40, y: 45), withAttributes: nil)
+        }
+        var closed = false
+        let host = UIHostingController(rootView: WatermarkReaderNavigation {
+            DocumentPreview(data: data, name: "Exemple.pdf")
+        } actions: {
+            Button("Quitter le plein écran", systemImage: "arrow.down.right.and.arrow.up.left") {}
+            Menu("Imprimer", systemImage: "printer") { Button("Imprimer l’original") {} }
+            Menu("Partager", systemImage: "square.and.arrow.up") { Button("Partager l’original") {} }
+        }.onHingeChange { _, context in closed = context.hinge?.status == .closed })
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+
+        func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(descendants) }
+        let originalOrientation = scene.interfaceOrientation
+        func mask(_ orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
+            UIInterfaceOrientationMask(rawValue: 1 << orientation.rawValue)
+        }
+        defer {
+            if scene.interfaceOrientation != originalOrientation {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask(originalOrientation)))
+            }
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        let orientations: [UIInterfaceOrientation] = closed ? [.portrait, .landscapeLeft, .landscapeRight] : [originalOrientation]
+        var sides = Set<Bool>()
+        for orientation in orientations {
+            if scene.interfaceOrientation != orientation {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask(orientation))) { error in XCTFail(error.localizedDescription) }
+            }
+            var located = false
+            for _ in 0..<50 {
+                try await Task.sleep(for: .milliseconds(75))
+                guard scene.interfaceOrientation == orientation else { continue }
+                let root = host.view.window ?? host.view!
+                // Native toolbar buttons can contain another UIControl; measure only the innermost one.
+                let controls = descendants(root).filter { view in
+                    view is UIControl && !view.isHidden && view.alpha > 0 && view.window != nil
+                        && !view.subviews.contains { descendants($0).contains { $0 is UIControl } }
+                }
+                let frames = controls.map { $0.convert($0.bounds, to: root) }
+                    .filter { $0.width > 10 && $0.height > 10 && root.bounds.contains(CGPoint(x: $0.midX, y: $0.midY)) }
+                guard frames.count == 3 else { continue }
+                if closed {
+                    let right = frames[0].midX > root.bounds.midX
+                    guard frames.allSatisfy({ ($0.midX > root.bounds.midX) == right
+                        && min($0.midX, root.bounds.width - $0.midX) < 60 }),
+                        (frames.map(\.midY).max() ?? 0) - (frames.map(\.midY).min() ?? 0) > 60 else { continue }
+                    sides.insert(right)
+                }
+                let capture = XCTAttachment(image: UIGraphicsImageRenderer(bounds: root.bounds).image { _ in
+                    root.drawHierarchy(in: root.bounds, afterScreenUpdates: true)
+                })
+                capture.name = "Commandes du filigrane – orientation " + String(orientation.rawValue)
+                capture.lifetime = .keepAlways
+                add(capture)
+                located = true
+                break
+            }
+            XCTAssertTrue(located, "Disposition native absente, orientation demandée \(orientation.rawValue), obtenue \(scene.interfaceOrientation.rawValue), fermé \(closed)")
+        }
+        if closed { XCTAssertEqual(sides.count, 2, "La barre doit suivre le bord système après rotation.") }
+    }
+
     @MainActor func testClosedDuoReturnButtons() async throws {
         guard #available(iOS 27.1, *),
               ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
