@@ -12,6 +12,7 @@ struct DocumentScreen<Actions: View>: View {
     @State private var editing = false
     @State private var editingPhoto = false
     @State private var showVersions = false
+    @State private var watermarking = false
     @State private var exporting = false
     @State private var history: [Labels] = []
     @State private var showHistory = false
@@ -24,9 +25,19 @@ struct DocumentScreen<Actions: View>: View {
                     Button("Modifier la photo", systemImage: "slider.horizontal.3") { editingPhoto = true }
                         .help("Modifier la photo")
                 }
-                if let bytes {
-                    ShareLink(item: SharedBytes(bytes: bytes, name: item.labels.name),
-                              preview: SharePreview(item.labels.name)) { Label("Partager une copie", systemImage: "square.and.arrow.up") }
+                if bytes != nil || item.supportsWatermark {
+                    Menu {
+                        if let bytes {
+                            ShareLink(item: SharedBytes(bytes: bytes, name: item.labels.name),
+                                      preview: SharePreview(item.labels.name)) {
+                                Label("Partager une copie", systemImage: "square.and.arrow.up")
+                            }
+                        }
+                        if item.supportsWatermark {
+                            Button("Partager avec un filigrane…", systemImage: "textformat") { watermarking = true }
+                        }
+                    } label: { Label("Partager", systemImage: "square.and.arrow.up") }
+                    .help("Partager le document")
                 }
                 Menu {
                     actions
@@ -40,6 +51,9 @@ struct DocumentScreen<Actions: View>: View {
                     }
                 } label: { Label("Actions", systemImage: "ellipsis.circle") }
             }
+        }
+        .lockerPanel(isPresented: $watermarking) {
+            if let store = model.store { WatermarkScreen(store: store, item: item) }
         }
         .lockerPanel(isPresented: $showVersions) {
             VersionHistoryScreen(model: model, lineage: item.lineage, select: select)
@@ -81,6 +95,8 @@ struct DocumentScreen<Actions: View>: View {
 }
 
 private extension ListedDocument {
+    var supportsWatermark: Bool { isPhoto || (labels.name as NSString).pathExtension.lowercased() == "pdf" }
+
     var isPhoto: Bool {
         UTType(filenameExtension: (labels.name as NSString).pathExtension)?.conforms(to: .image) == true
     }

@@ -21,7 +21,7 @@ struct DocumentImportScreen: View {
                 guard model.store === store else { return }
                 switch result {
                 case let .success(document):
-                    model.perform { _ = try await $0.importData(document.bytes, name: document.name, folder: folder) }
+                    model.importCaptured(document.bytes, name: document.name, folder: folder)
                     dismiss()
                 case let .failure(error):
                     problem = error.localizedDescription
@@ -70,7 +70,7 @@ struct DocumentImportScreen: View {
                     }
                     try Task.checkCancellation()
                     guard model.store === store else { return }
-                    model.perform { _ = try await $0.importData(image.bytes, name: image.name, folder: folder) }
+                    model.importCaptured(image.bytes, name: image.name, folder: folder)
                     dismiss()
                 } catch {
                     guard !Task.isCancelled else { return }

@@ -4,6 +4,16 @@ import UniformTypeIdentifiers
 struct LibraryScreen: View {
     @Bindable var model: LockerModel
     @State private var query = ""
+    @State private var matchedContent = Set<UUID>()
+    @State private var matchedQuery = ""
+    @State private var checkingContent = false
+    @State private var unreadableCount = 0
+
+    private struct SearchRequest: Equatable {
+        let query: String
+        let documents: [ListedDocument]
+        let session: ObjectIdentifier?
+    }
     @State private var folder = ""
     @State private var creatingFolder = false
     @State private var folderName = ""
@@ -38,16 +48,42 @@ struct LibraryScreen: View {
     @State private var pendingDelete: ListedDocument?
 
     private var folderDocuments: [ListedDocument] { model.library.documents(in: folder) }
-    private var selectedDocument: ListedDocument? { folderDocuments.first { $0.id == selection } }
+    private var selectedDocument: ListedDocument? { (query.isEmpty ? folderDocuments : model.documents).first { $0.id == selection } }
 
     private var filtered: [ListedDocument] {
-        folderDocuments.filter { row in
+        (query.isEmpty ? folderDocuments : model.documents).filter { row in
             let labels = row.labels
             return (category.isEmpty || category == labels.category)
-                && (query.isEmpty || [labels.name, labels.category, labels.folder, labels.notes]
+                && (query.isEmpty || (matchedQuery == query && matchedContent.contains(row.id)) || [labels.name, labels.category, labels.folder, labels.notes]
                     .contains { $0.localizedStandardContains(query) })
         }
     }
+    @MainActor private func searchContent() async {
+        let term = query
+        let needle = term.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        matchedContent = []
+        matchedQuery = term
+        unreadableCount = 0
+        checkingContent = !needle.isEmpty && model.store != nil
+        guard checkingContent, let session = model.store else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(300))
+            for item in model.documents {
+                try Task.checkCancellation()
+                do {
+                    let found = try await session.matchesContent(item, query: needle)
+                    try Task.checkCancellation()
+                    guard model.store === session, query == term else { return }
+                    if found { matchedContent.insert(item.id) }
+                } catch {
+                    guard !Task.isCancelled, model.store === session, query == term else { return }
+                    unreadableCount += 1
+                }
+            }
+            checkingContent = false
+        } catch {}
+    }
+
     private var orderedDocuments: [ListedDocument] {
         // The catalogue already supplies documents in ascending name order.
         if sortField == .name && sortAscending { return filtered }
@@ -109,7 +145,7 @@ struct LibraryScreen: View {
             else { listContents(compact: compact) }
         }
         .overlay {
-            if filtered.isEmpty && !showsFolders {
+            if filtered.isEmpty && !showsFolders && !(checkingContent && !query.isEmpty) {
                 let searching = !query.isEmpty || !category.isEmpty
                 ContentUnavailableView {
                     Label(searching ? "Aucun résultat" : "Aucun document",
@@ -123,13 +159,21 @@ struct LibraryScreen: View {
                 }
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { collectionControls }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                collectionControls
+                if !query.isEmpty && checkingContent { ProgressView("Recherche dans le contenu…").font(.caption).padding(4) }
+                if !query.isEmpty && !checkingContent && unreadableCount > 0 {
+                    Text("Contenu illisible pour \(unreadableCount) document(s).").font(.caption)
+                }
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if selectingDocuments {
                 Menu {
-                    Button("Racine du coffre") { moveMarked(to: "") }.disabled(folder.isEmpty)
+                    Button("Racine du coffre") { moveMarked(to: "") }.disabled(!canMoveMarked(to: ""))
                     ForEach(model.library.folders, id: \.self) { target in
-                        Button(target) { moveMarked(to: target) }.disabled(target == folder)
+                        Button(target) { moveMarked(to: target) }.disabled(!canMoveMarked(to: target))
                     }
                 } label: {
                     Label("Déplacer (\(marked.count))", systemImage: "folder")
@@ -139,7 +183,7 @@ struct LibraryScreen: View {
             }
         }
         .onChange(of: filtered.map(\.id)) { _, ids in marked.formIntersection(ids) }
-        .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
+        .searchable(text: $query, prompt: "Rechercher dans tout le coffre")
         .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
         .onChange(of: folder) { category = ""; query = ""; marked.removeAll(); selectingDocuments = false }
         .onChange(of: folderDocuments) { previous, current in
@@ -233,7 +277,7 @@ struct LibraryScreen: View {
                     }
                 }
                 ForEach(orderedDocuments) { item in
-                    let tile = DocumentTile(item: item, store: model.store)
+                    let tile = DocumentTile(item: item, store: model.store, showsFolder: !query.isEmpty)
                     if selectingDocuments {
                         markButton(item) { tile }
                     } else {
@@ -264,6 +308,10 @@ struct LibraryScreen: View {
         Image(systemName: marked.contains(item.id) ? "checkmark.circle.fill" : "circle")
             .foregroundStyle(Color.lockerTint).background(.background, in: Circle())
             .accessibilityHidden(true)
+    }
+
+    private func canMoveMarked(to destination: String) -> Bool {
+        model.documents.contains { marked.contains($0.id) && $0.labels.folder != destination }
     }
 
     private func moveMarked(to destination: String) {
@@ -308,7 +356,7 @@ struct LibraryScreen: View {
             DocumentGlyph(name: item.labels.name)
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.labels.name).font(.body.weight(.medium)).lineLimit(2)
-                Text([item.labels.category, item.size.formatted(.byteCount(style: .file))]
+                Text([query.isEmpty ? "" : item.labels.folder, item.labels.category, item.size.formatted(.byteCount(style: .file))]
                     .filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -356,6 +404,12 @@ struct LibraryScreen: View {
 
     var body: some View {
         browserWithCommands
+        .task(id: SearchRequest(query: query, documents: query.isEmpty ? [] : model.documents,
+                                session: model.store.map(ObjectIdentifier.init))) { await searchContent() }
+        .modifier(DuplicateImportPrompt(model: model))
+        .onChange(of: model.openAfterImport) { _, id in
+            if let id { query = ""; category = ""; selectVersion(id); model.openAfterImport = nil }
+        }
         .sheet(isPresented: $importer) {
             DocumentImportScreen(model: model, folder: folder)
         }
@@ -380,8 +434,8 @@ struct LibraryScreen: View {
             ArchiveDestinationScreen(model: model, files: files, folder: folder)
         }
         .overlay(alignment: .bottom) {
-            if model.extracting {
-                ProgressView("Décompression…").padding().background(.regularMaterial, in: Capsule())
+            if model.reviewingImport && model.duplicateImport == nil {
+                ProgressView(model.extracting ? "Décompression…" : "Vérification de l’import…").padding().background(.regularMaterial, in: Capsule())
             }
         }
         .alert("Nouveau dossier", isPresented: $creatingFolder) {
@@ -438,7 +492,7 @@ struct LibraryScreen: View {
                     guard model.store === store else { return }
                     scanner = false
                     switch result {
-                    case let .success(scan): model.perform { _ = try await $0.importData(scan.bytes, name: scan.name, folder: folder) }
+                    case let .success(scan): model.importCaptured(scan.bytes, name: scan.name, folder: folder)
                     case let .failure(error): model.problem = error.localizedDescription
                     }
                 } cancel: { scanner = false }
@@ -571,7 +625,7 @@ struct LibraryScreen: View {
     private var importButton: some View {
         Button("Importer un fichier", systemImage: "doc.badge.plus") { importer = true }
             .help("Importer un fichier")
-            .disabled(model.extracting)
+            .disabled(model.reviewingImport)
     }
 
     private var trashButton: some View {

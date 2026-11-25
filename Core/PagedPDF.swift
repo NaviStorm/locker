@@ -109,6 +109,20 @@ actor PagedPDF {
         pages = doc.numberOfPages
     }
 
+    func hasAnnotations(on number: Int) throws -> Bool {
+        try source.gate.check()
+        guard let page = document.page(at: number), let dictionary = page.dictionary else { throw VaultError.damaged }
+        var annotations: CGPDFArrayRef?
+        return CGPDFDictionaryGetArray(dictionary, "Annots", &annotations) && annotations.map { CGPDFArrayGetCount($0) > 0 } == true
+    }
+
+    func pageSize(_ number: Int) throws -> CGSize {
+        try source.gate.check()
+        guard let page = document.page(at: number) else { throw VaultError.unavailable }
+        let size = page.getBoxRect(.cropBox).size
+        return abs(page.rotationAngle % 180) == 90 ? CGSize(width: size.height, height: size.width) : size
+    }
+
     func render(_ number: Int) throws -> CGImage {
         try source.gate.check()
         guard let page = document.page(at: number) else { throw VaultError.unavailable }

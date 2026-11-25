@@ -64,6 +64,11 @@ final class LockerModel {
         return slots.contains { $0 != id && name(of: $0) == title } ? title + " · " + id.prefix(8) : title
     }
     var extracting = false
+    var reviewingImport = false
+    var duplicateImport: DuplicateImport?
+    var openAfterImport: UUID?
+    @ObservationIgnored var importAnswer: CheckedContinuation<DuplicateChoice?, Never>?
+
     var pendingArchivePlacement: SelectedImport?
     var pendingNearbyRole: NearbyRole?
     var opening = false
@@ -168,6 +173,9 @@ final class LockerModel {
     }
 
     func lock() {
+        resolveDuplicate(nil)
+        reviewingImport = false
+        openAfterImport = nil
         newVaultSetup = nil
         removalRequest = nil
         if let store, let kind = VaultKind.cached(in: store.root) { vaultKinds[slot] = kind }

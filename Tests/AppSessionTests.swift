@@ -858,6 +858,11 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(model.library.documents(in: "Archives").map(\.labels.name), ["note.txt"])
         XCTAssertTrue(model.library.documents(in: "").isEmpty)
         model.importArchive(files, inNewVault: false, folder: "", extract: true)
+        for name in ["test.txt", "note.txt"] {
+            for _ in 0..<200 where model.duplicateImport == nil { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertEqual(model.duplicateImport?.existing.name, name)
+            model.resolveDuplicate(.keepBoth)
+        }
         try await settle { model.documents.count == 4 }
         XCTAssertEqual(model.library.documents(in: "").map(\.labels.name), ["note.txt"])
         model.importArchive(files, inNewVault: false, folder: "Archives", extract: false)
