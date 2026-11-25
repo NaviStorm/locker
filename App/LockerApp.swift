@@ -8,7 +8,7 @@ struct LockerApp: App {
         Window("Locker", id: "locker") { RootScreen(model: model).frame(minWidth: 480, minHeight: 460) }
             .defaultSize(width: 900, height: 650)
         #else
-        WindowGroup { RootScreen(model: model) }
+        WindowGroup { RootScreen(model: model).modifier(DuoPostureReader()) }
         #endif
     }
 }
@@ -20,7 +20,12 @@ struct RootScreen: View {
     @State private var unlockSecret = ""
     @State private var protectNewKey = true
     @State private var recovering = false
-    @State private var partiallyOpen = false
+    #if os(iOS)
+    @Environment(\.duoPosture) private var duoPosture
+    private var partiallyOpen: Bool { duoPosture == .folded }
+    #else
+    private let partiallyOpen = false
+    #endif
 
     var body: some View {
         Group {
@@ -68,18 +73,11 @@ struct RootScreen: View {
         } message: { Text(model.problem ?? "") }
     }
 
-    @ViewBuilder private var welcome: some View {
-        let layout = VaultWelcomeLayout(partiallyOpen: partiallyOpen,
-                                        showCompactCover: !model.authenticationMethod.isCustom || recovering) {
+    private var welcome: some View {
+        VaultWelcomeLayout(partiallyOpen: partiallyOpen,
+                          showCompactCover: !model.authenticationMethod.isCustom || recovering) {
             accessControls
         }
-        #if os(iOS)
-        if #available(iOS 27.1, *) {
-            layout.onHingeChange { _, context in partiallyOpen = context.hinge?.status == .partiallyOpen }
-        } else { layout }
-        #else
-        layout
-        #endif
     }
 
     private func unlockSelected(after: (() -> Void)? = nil) {
@@ -189,13 +187,7 @@ struct VaultWelcomeLayout<Controls: View>: View {
     @available(iOS 27.1, *)
     private func folded(_ geometry: GeometryProxy) -> some View {
         let width = geometry.size.width
-        let hinge = geometry.reservedRegions(kind: .division).map(\.frame).first {
-            $0.height > $0.width && $0.midX > 0 && $0.midX < width
-        }
-        let insets = geometry.safeAreaInsets
-        let middle = (width + insets.trailing - insets.leading) / 2
-        let left = min(width, max(0, hinge?.minX ?? middle))
-        let rightStart = min(width, max(left, hinge?.maxX ?? middle))
+        let (left, rightStart) = geometry.duoColumnEdges
         return HStack(spacing: rightStart - left) {
             Image("LockerMark")
                 .resizable()

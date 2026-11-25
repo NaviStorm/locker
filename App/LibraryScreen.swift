@@ -19,6 +19,8 @@ struct LibraryScreen: View {
     @State private var showSidebar = true
     #endif
     #if os(iOS)
+    @Environment(\.duoPosture) private var duoPosture
+    @State private var expandedFolders: Set<String> = []
     @State private var familySharing = false
     #endif
     @State private var resumedNearby: NearbyRole?
@@ -402,7 +404,9 @@ struct LibraryScreen: View {
                 let name = folderName
                 model.perform { store in
                     let target = try await store.renameFolder(source, to: name)
-                    if folder == source { folder = target }
+                    if folder == source || folder.hasPrefix(source + "/") {
+                        folder = target + String(folder.dropFirst(source.count))
+                    }
                 }
             }.disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Annuler", role: .cancel) {}
@@ -521,9 +525,23 @@ struct LibraryScreen: View {
             }
         }
         #else
-        if showsThumbnails { stackedBrowser } else { browser }
+        if #available(iOS 27.1, *), duoPosture != .compact {
+            DuoLibraryPanes(folded: duoPosture == .folded) {
+                DuoFolderSidebar(title: model.vaultTitle, folders: model.library.folders, folder: folder,
+                                 expanded: $expandedFolders, select: { path in
+                    selection = nil
+                    folder = path
+                }, actions: folderActions)
+            } contents: { stackedBrowser }
+        } else { compactLibrary }
         #endif
     }
+
+    #if os(iOS)
+    @ViewBuilder private var compactLibrary: some View {
+        if showsThumbnails { stackedBrowser } else { browser }
+    }
+    #endif
 
     private var folderButton: some View {
         Button("Nouveau dossier", systemImage: "folder.badge.plus") {

@@ -122,6 +122,110 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @MainActor func testDuoFinderPlacesRootDocumentsBesideFolders() async throws {
+        guard #available(iOS 27.1, *) else { throw XCTSkip("Nécessite iOS 27.1.") }
+        let model = LockerModel(base: location("bibliotheque"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        let folder = try await store.createFolder("Factures")
+        _ = try await store.importData(Data([1]), name: "Exemple.txt")
+        _ = try await store.importData(Data([2]), name: "Archive.txt", folder: folder)
+        model.store = store
+        model.library = try await store.library()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func screen(_ posture: DuoPosture) -> some View {
+            GeometryReader { geometry in
+                LibraryScreen(model: model)
+                    .environment(\.duoPosture, posture).defaultAppStorage(defaults)
+                    .frame(width: 820, height: 510)
+                    .scaleEffect(min(1, geometry.size.width / 820, geometry.size.height / 510))
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            }
+        }
+        let host = UIHostingController(rootView: screen(.open))
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+        for posture in [DuoPosture.open, .folded] {
+            defaults.set(posture == .folded, forKey: "libraryShowsThumbnails")
+            host.rootView = screen(posture)
+            try await Task.sleep(for: .milliseconds(500))
+            let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = posture == .open ? "Bibliothèque ouverte" : "Bibliothèque partiellement ouverte"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            let request = VNRecognizeTextRequest()
+            request.recognitionLanguages = ["fr-FR"]
+            try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+            let words = (request.results ?? []).map { observation in
+                (string: observation.topCandidates(1).first?.string ?? "", boundingBox: observation.boundingBox)
+            }
+            let left = try XCTUnwrap(words.first { $0.string.localizedStandardContains("Factures") && $0.boundingBox.midX < 0.5 })
+            let right = try XCTUnwrap(words.first { $0.string.localizedStandardContains("Exemple") })
+            XCTAssertLessThan(left.boundingBox.maxX, right.boundingBox.minX)
+            XCTAssertFalse(words.contains { $0.string.localizedStandardContains("Archive.txt") })
+        }
+    }
+
+    @MainActor func testDuoFolderNavigationAcrossOpenPostures() async throws {
+        guard #available(iOS 27.1, *) else { throw XCTSkip("Nécessite iOS 27.1.") }
+        XCTAssertEqual(DuoPosture(.fullyOpen), .open)
+        XCTAssertEqual(DuoPosture(.partiallyOpen), .folded)
+        XCTAssertEqual(DuoPosture(.closed), .compact)
+        XCTAssertEqual(DuoPosture(nil), .compact)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("navigation"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        let parent = try await store.createFolder("Administration")
+        let child = try await store.createFolder("Courriers", in: parent)
+        _ = try await store.importData(Data("Texte fictif".utf8), name: "Lettre.txt", folder: child)
+        _ = try await store.importData(Data([42]), name: "Notice.txt")
+        model.store = store
+        model.library = try await store.library()
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func screen(_ posture: DuoPosture) -> some View {
+            LibraryScreen(model: model).defaultAppStorage(defaults).environment(\.duoPosture, posture)
+        }
+        let host = UIHostingController(rootView: screen(.open))
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+        func tap(_ label: String) async throws {
+            let control = try await button(label, in: host)
+            if let button = control as? UIControl { button.sendActions(for: .primaryActionTriggered) }
+            else { XCTAssertTrue(control.accessibilityActivate(), label) }
+        }
+        try await tap("Déplier Administration")
+        try await tap("Courriers")
+        _ = try await button("Lettre.txt", in: host)
+        host.rootView = screen(.folded)
+        let sidebar = try await button("Replier Administration", in: host)
+        let document = try await button("Lettre.txt", in: host)
+        XCTAssertLessThan(sidebar.accessibilityFrame.midX, document.accessibilityFrame.minX)
+        let capture = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: capture)
+        attachment.name = "Bibliothèque en colonnes"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        try await tap("Lettre.txt")
+        _ = try await button("Actions", in: host)
+        try await tap(model.vaultTitle)
+        _ = try await button("Notice.txt", in: host)
+        host.rootView = screen(.compact)
+        _ = try await button("Notice.txt", in: host)
+    }
+
     @MainActor func testWelcomeControlsRespectTheFoldAndReturnToStandardLayout() async throws {
         struct WelcomeFixture: View {
             let folded: Bool
