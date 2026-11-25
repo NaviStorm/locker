@@ -122,6 +122,57 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @MainActor func testWelcomeControlsRespectTheFoldAndReturnToStandardLayout() async throws {
+        struct WelcomeFixture: View {
+            let folded: Bool
+            let record: (CGRect) -> Void
+            var body: some View {
+                GeometryReader { display in
+                    VaultWelcomeLayout(partiallyOpen: folded, showCompactCover: true) {
+                        VStack(alignment: .leading) {
+                            UnlockSecretField(method: .numericCode, text: .constant(""))
+                            Button("Ouvrir le coffre") {}.buttonStyle(.borderedProminent)
+                        }
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("accueil")) } action: { record($0) }
+                    }
+                    .coordinateSpace(name: "accueil")
+                    .frame(width: 800, height: 450)
+                    .scaleEffect(min(1, display.size.width / 800, display.size.height / 450))
+                    .position(x: display.size.width / 2, y: display.size.height / 2)
+                }
+            }
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        var bounds = CGRect.zero
+        let host = UIHostingController(rootView: WelcomeFixture(folded: false) { bounds = $0 })
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+        var original: CGRect?
+        for folded in [false, true, false] {
+            host.rootView = WelcomeFixture(folded: folded) { bounds = $0 }
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertGreaterThan(bounds.width, 100)
+            if folded {
+                XCTAssertGreaterThanOrEqual(bounds.minX, 400)
+                XCTAssertLessThanOrEqual(bounds.maxX, 800)
+            } else if let original {
+                XCTAssertEqual(bounds, original)
+            } else {
+                XCTAssertLessThan(bounds.minX, 400)
+                original = bounds
+            }
+            let capture = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: capture)
+            attachment.name = folded ? "Accueil partiellement replié" : "Accueil ouvert"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     @MainActor func testUnlockFieldShowsItsLabelBeforeAndDuringEntry() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)

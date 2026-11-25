@@ -20,33 +20,14 @@ struct RootScreen: View {
     @State private var unlockSecret = ""
     @State private var protectNewKey = true
     @State private var recovering = false
+    @State private var partiallyOpen = false
 
     var body: some View {
         Group {
             if model.store != nil {
                 LibraryScreen(model: model)
             } else {
-                GeometryReader { geometry in
-                    let wide = geometry.size.width >= 740
-                    ScrollView {
-                        let layout = wide ? AnyLayout(HStackLayout(spacing: 26)) : AnyLayout(VStackLayout(spacing: 20))
-                        layout {
-                            if wide || geometry.size.height >= 440 || !model.authenticationMethod.isCustom || recovering {
-                                LockerCover(compact: !wide)
-                                    .frame(maxWidth: wide ? 250 : .infinity)
-                                    .frame(height: wide ? 276 : nil)
-                            }
-                            accessControls
-                        }
-                        .padding(14)
-                        .frame(maxWidth: wide ? 800 : 440)
-                        .background(.background, in: RoundedRectangle(cornerRadius: 28))
-                        .overlay { RoundedRectangle(cornerRadius: 28).strokeBorder(.primary.opacity(0.07)) }
-                        .padding(wide ? 32 : 16)
-                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
-                    }
-                    .background(Color.lockerCanvas)
-                }
+                welcome
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -85,6 +66,20 @@ struct RootScreen: View {
         .alert("Locker", isPresented: Binding(get: { model.problem != nil }, set: { if !$0 { model.problem = nil } })) {
             Button("Fermer") { model.problem = nil }
         } message: { Text(model.problem ?? "") }
+    }
+
+    @ViewBuilder private var welcome: some View {
+        let layout = VaultWelcomeLayout(partiallyOpen: partiallyOpen,
+                                        showCompactCover: !model.authenticationMethod.isCustom || recovering) {
+            accessControls
+        }
+        #if os(iOS)
+        if #available(iOS 27.1, *) {
+            layout.onHingeChange { _, context in partiallyOpen = context.hinge?.status == .partiallyOpen }
+        } else { layout }
+        #else
+        layout
+        #endif
     }
 
     private func unlockSelected(after: (() -> Void)? = nil) {
@@ -169,6 +164,84 @@ struct RootScreen: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .disabled(model.opening || model.removingVault)
+    }
+}
+
+struct VaultWelcomeLayout<Controls: View>: View {
+    let partiallyOpen: Bool
+    let showCompactCover: Bool
+    @ViewBuilder let controls: () -> Controls
+
+    var body: some View {
+        GeometryReader { geometry in
+            #if os(iOS)
+            if #available(iOS 27.1, *), partiallyOpen {
+                folded(geometry)
+            } else { standard(geometry) }
+            #else
+            standard(geometry)
+            #endif
+        }
+        .background(Color.lockerCanvas)
+    }
+
+    #if os(iOS)
+    @available(iOS 27.1, *)
+    private func folded(_ geometry: GeometryProxy) -> some View {
+        let width = geometry.size.width
+        let hinge = geometry.reservedRegions(kind: .division).map(\.frame).first {
+            $0.height > $0.width && $0.midX > 0 && $0.midX < width
+        }
+        let insets = geometry.safeAreaInsets
+        let middle = (width + insets.trailing - insets.leading) / 2
+        let left = min(width, max(0, hinge?.minX ?? middle))
+        let rightStart = min(width, max(left, hinge?.maxX ?? middle))
+        return HStack(spacing: rightStart - left) {
+            Image("LockerMark")
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 140, maxHeight: 140)
+                .clipShape(RoundedRectangle(cornerRadius: 28))
+                .padding()
+                .frame(width: left)
+                .accessibilityLabel("Locker")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Locker")
+                        .font(.system(.title, design: .rounded, weight: .bold))
+                        .padding([.horizontal, .top], 12)
+                    controls()
+                }
+                .padding(8)
+                .background(.background, in: RoundedRectangle(cornerRadius: 20))
+                .padding(12)
+                .frame(maxWidth: 480, minHeight: geometry.size.height)
+                .frame(maxWidth: .infinity)
+            }
+            .frame(width: width - rightStart)
+        }
+    }
+    #endif
+
+    private func standard(_ geometry: GeometryProxy) -> some View {
+        let wide = geometry.size.width >= 740
+        return ScrollView {
+            let layout = wide ? AnyLayout(HStackLayout(spacing: 26)) : AnyLayout(VStackLayout(spacing: 20))
+            layout {
+                if wide || geometry.size.height >= 440 || showCompactCover {
+                    LockerCover(compact: !wide)
+                        .frame(maxWidth: wide ? 250 : .infinity)
+                        .frame(height: wide ? 276 : nil)
+                }
+                controls()
+            }
+            .padding(14)
+            .frame(maxWidth: wide ? 800 : 440)
+            .background(.background, in: RoundedRectangle(cornerRadius: 28))
+            .overlay { RoundedRectangle(cornerRadius: 28).strokeBorder(.primary.opacity(0.07)) }
+            .padding(wide ? 32 : 16)
+            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+        }
     }
 }
 
