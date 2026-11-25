@@ -1,5 +1,11 @@
 import AuthenticationServices
 import SwiftUI
+#if os(iOS)
+import UIKit
+import UniformTypeIdentifiers
+#else
+import AppKit
+#endif
 
 struct SettingsScreen: View {
     @Bindable var model: LockerModel
@@ -85,8 +91,9 @@ struct SettingsScreen: View {
                     Picker("Verrouillage après inactivité", selection: $model.timeout) {
                         ForEach([30, 60, 120, 300, 900], id: \.self) { Text($0 < 60 ? "30 secondes" : "\($0 / 60) min").tag($0) }
                     }
-                    if let code { Text(code).font(.system(.body, design: .monospaced)) }
-                    else {
+                    if let code {
+                        RecoveryCodeRow(code: code)
+                    } else {
                         Button("Afficher le code de récupération") {
                             model.perform { store in code = try await store.recoveryCode() }
                         }
@@ -228,6 +235,44 @@ struct SettingsScreen: View {
                     editingPassword = false
                 }
             } catch { errorText = error.localizedDescription }
+        }
+    }
+}
+
+private struct RecoveryCodeRow: View {
+    let code: String
+    @State private var copiedAt: Date?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(verbatim: code)
+                .font(.system(.body, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                #if os(iOS)
+                UIPasteboard.general.setItems([[UTType.utf8PlainText.identifier: code]], options: [.localOnly: true])
+                #else
+                let clipboard = NSPasteboard.general
+                clipboard.prepareForNewContents(with: .currentHostOnly)
+                guard clipboard.setString(code, forType: .string) else { return }
+                #endif
+                copiedAt = .now
+            } label: {
+                Label("Copier le code de récupération", systemImage: copiedAt == nil ? "doc.on.doc" : "checkmark")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .help("Copier le code de récupération")
+            .accessibilityValue(copiedAt == nil ? "" : "Copié")
+        }
+        .task(id: copiedAt) {
+            guard copiedAt != nil else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copiedAt = nil
         }
     }
 }
