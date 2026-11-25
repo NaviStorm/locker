@@ -61,9 +61,11 @@ struct DocumentScreen<Actions: View>: View {
                 if model.store === store { model.problem = error.localizedDescription }
             }
         }
-        .lockerPanel(isPresented: $watermarking) {
-            if let store = model.store { WatermarkScreen(store: store, item: item) }
-        }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $watermarking) { watermarkScreen }
+        #else
+        .sheet(isPresented: $watermarking) { watermarkScreen }
+        #endif
         .lockerPanel(isPresented: $showVersions) {
             VersionHistoryScreen(model: model, lineage: item.lineage, select: select)
         }
@@ -100,6 +102,10 @@ struct DocumentScreen<Actions: View>: View {
                 try await store.export(item.id, to: dir.appendingPathComponent(name))
             }
         }
+    }
+
+    @ViewBuilder private var watermarkScreen: some View {
+        if let store = model.store { WatermarkScreen(store: store, item: item) }
     }
 }
 

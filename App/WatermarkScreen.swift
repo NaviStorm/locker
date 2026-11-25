@@ -16,7 +16,9 @@ struct WatermarkScreen: View {
     @State private var requested: String?
     @State private var copy: WatermarkedPDF?
     @State private var problem: String?
+    #if os(macOS)
     @State private var expanded = false
+    #endif
     @State private var printer = DocumentPrinter()
     @State private var printingOriginal: DocumentPrintSize?
 
@@ -25,11 +27,7 @@ struct WatermarkScreen: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.lockerCanvas)
         #if os(iOS)
-        WatermarkReaderNavigation {
-            document
-        } actions: {
-            readerActions(copy)
-        }
+        document.modifier(WatermarkReaderToolbar { readerActions(copy) })
         #else
         document.safeAreaInset(edge: .bottom, spacing: 0) {
             HStack { readerActions(copy) }
@@ -40,10 +38,15 @@ struct WatermarkScreen: View {
     }
 
     @ViewBuilder private func readerActions(_ copy: WatermarkedPDF) -> some View {
+        #if os(iOS)
+        Button("Retour", systemImage: "chevron.backward") { editWatermark() }
+            .keyboardShortcut(.cancelAction)
+        #else
         Button(expanded ? "Quitter le plein écran" : "Plein écran",
                systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
             expanded.toggle()
         }
+        #endif
         Menu {
             PrintSizeMenu(title: "Imprimer la copie avec filigrane") { size in
                 do {
@@ -62,21 +65,34 @@ struct WatermarkScreen: View {
         } label: { Label("Partager", systemImage: "square.and.arrow.up") }
     }
 
+    private func editWatermark() {
+        copy = nil
+        requested = nil
+        problem = nil
+    }
+
+    private func preview(_ copy: WatermarkedPDF) -> some View {
+        reader(copy)
+            .background(DocumentPrintAnchor(printer: printer))
+            .alert("Impression", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+                Button("Fermer") { problem = nil }
+            } message: { Text(problem ?? "") }
+            .privacySensitive()
+    }
+
     var body: some View {
         NavigationStack {
             Group {
                 if let copy {
-                    ExpandableDocumentReader(expanded: $expanded) {
-                        reader(copy)
-                            .background(DocumentPrintAnchor(printer: printer))
-                            .alert("Impression", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
-                                Button("Fermer") { problem = nil }
-                            } message: { Text(problem ?? "") }
-                            .privacySensitive()
-                    }
-                    .toolbar {
-                        Button("Modifier le filigrane", systemImage: "pencil") { self.copy = nil; requested = nil }
-                    }
+                    #if os(iOS)
+                    preview(copy)
+                    #else
+                    ExpandableDocumentReader(expanded: $expanded) { preview(copy) }
+                        .toolbar {
+                            Button("Modifier le filigrane", systemImage: "pencil") { editWatermark() }
+                        }
+                        .modifier(VaultDismissToolbar())
+                    #endif
                 } else {
                     VStack(alignment: .leading, spacing: 12) {
                         TextField("Texte du filigrane", text: $message,
@@ -91,10 +107,10 @@ struct WatermarkScreen: View {
                         if message.count > 180 { Text("180 caractères maximum.").font(.footnote) }
                         if let problem { Text(problem).foregroundStyle(.red) }
                         Spacer()
-                    }.padding()
+                    }.padding().modifier(VaultDismissToolbar())
                 }
             }
-            .navigationTitle("Copie avec filigrane").modifier(VaultDismissToolbar())
+            .navigationTitle("Copie avec filigrane")
         }
         .frame(idealWidth: 560, idealHeight: 550)
         .task(id: printingOriginal) {
@@ -109,7 +125,9 @@ struct WatermarkScreen: View {
                 let bytes = try await store.watermarkedCopy(of: item, message: requested)
                 try Task.checkCancellation()
                 try store.gate.check()
+                #if os(macOS)
                 expanded = true
+                #endif
                 copy = WatermarkedPDF(bytes: bytes, name: (item.labels.name as NSString).deletingPathExtension + "-filigrane.pdf")
             } catch {
                 if !Task.isCancelled { problem = error.localizedDescription; self.requested = nil }
@@ -119,21 +137,18 @@ struct WatermarkScreen: View {
 }
 
 #if os(iOS)
-struct WatermarkReaderNavigation<Document: View, Actions: View>: View {
-    @ViewBuilder let document: () -> Document
+struct WatermarkReaderToolbar<Actions: View>: ViewModifier {
     @ViewBuilder let actions: () -> Actions
 
-    var body: some View {
-        // This navigation stack travels with the PDF when its hosting controller goes full screen.
-        NavigationStack {
-            document()
-                .toolbar(.hidden, for: .navigationBar)
-                .toolbar {
-                    if #available(iOS 27.1, *) {
-                        items.axisBehavior(.verticalPreferred)
-                    } else { items }
-                }
-        }
+    func body(content: Content) -> some View {
+        content
+            .toolbar(.hidden, for: .navigationBar)
+            .toolbar(.visible, for: .bottomBar)
+            .toolbar {
+                if #available(iOS 27.1, *) {
+                    items.axisBehavior(.verticalPreferred)
+                } else { items }
+            }
     }
 
     private var items: some ToolbarContent {

@@ -566,19 +566,48 @@ final class AppSessionTests: VaultTestCase {
             $0.beginPage()
             ("Document fictif" as NSString).draw(at: CGPoint(x: 40, y: 45), withAttributes: nil)
         }
+        let store = try VaultStore(root: location("filigrane"), keys: VaultKeys(), create: true)
+        _ = try await store.importData(data, name: "Exemple.pdf")
+        let documents = try await store.list()
+        let item = try XCTUnwrap(documents.first)
+        let state = ReaderPresentation()
         var closed = false
-        let host = UIHostingController(rootView: WatermarkReaderNavigation {
-            DocumentPreview(data: data, name: "Exemple.pdf")
-        } actions: {
-            Button("Quitter le plein écran", systemImage: "arrow.down.right.and.arrow.up.left") {}
-            Menu("Imprimer", systemImage: "printer") { Button("Imprimer l’original") {} }
-            Menu("Partager", systemImage: "square.and.arrow.up") { Button("Partager l’original") {} }
-        }.onHingeChange { _, context in closed = context.hinge?.status == .closed })
+        let host = UIHostingController(rootView: Color.clear
+            .fullScreenCover(isPresented: Binding(get: { state.expanded }, set: { state.expanded = $0 })) {
+                WatermarkScreen(store: store, item: item)
+                    .onHingeChange { _, context in closed = context.hinge?.status == .closed }
+            })
         host.modalPresentationStyle = .fullScreen
         await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
-        defer { host.dismiss(animated: false) }
+        defer { presenter.dismiss(animated: false) }
+        state.expanded = true
 
         func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(descendants) }
+        func activate(_ label: String) async throws {
+            let element = try await button(label, in: host)
+            if let control = element as? UIControl { control.sendActions(for: .primaryActionTriggered) }
+            else { XCTAssertTrue(element.accessibilityActivate(), label) }
+        }
+        func input() async throws -> UIView {
+            for _ in 0..<40 {
+                if let modal = host.presentedViewController,
+                   let field = descendants(modal.view).first(where: { $0 is UITextView || $0 is UITextField }) {
+                    return field
+                }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            throw TransportError(message: "Champ du filigrane absent")
+        }
+        let field = try await input()
+        _ = field.becomeFirstResponder()
+        (field as? UIKeyInput)?.insertText("Usage fictif")
+        _ = field.resignFirstResponder()
+        try await activate("Prévisualiser la copie")
+        _ = try await button("Imprimer", in: host)
+        _ = try await button("Partager", in: host)
+        let modal = try XCTUnwrap(host.presentedViewController)
+        XCTAssertTrue(descendants(modal.view).contains { $0 is PDFView })
+        XCTAssertNil(modal.presentedViewController)
         let originalOrientation = scene.interfaceOrientation
         func mask(_ orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
             UIInterfaceOrientationMask(rawValue: 1 << orientation.rawValue)
@@ -627,6 +656,15 @@ final class AppSessionTests: VaultTestCase {
             XCTAssertTrue(located, "Disposition native absente, orientation demandée \(orientation.rawValue), obtenue \(scene.interfaceOrientation.rawValue), fermé \(closed)")
         }
         if closed { XCTAssertEqual(sides.count, 2, "La barre doit suivre le bord système après rotation.") }
+        try await activate("Retour")
+        let edited = try await input()
+        XCTAssertEqual((edited as? UITextView)?.text ?? (edited as? UITextField)?.text, "Usage fictif")
+        try await activate(closed ? "Retour" : "Fermer")
+        for _ in 0..<40 where host.presentedViewController != nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(host.presentedViewController)
+
     }
 
     @MainActor func testClosedDuoReturnButtons() async throws {
