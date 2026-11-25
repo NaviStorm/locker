@@ -122,6 +122,34 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @MainActor func testUnlockFieldShowsItsLabelBeforeAndDuringEntry() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        for method in [VaultAuthenticationMethod.numericCode, .vaultPassword] {
+            let host = UIHostingController(rootView: UnlockSecretField(method: method, text: .constant(""))
+                .padding().frame(width: 295))
+            await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+            for value in ["", "1234567890"] {
+                host.rootView = UnlockSecretField(method: method, text: .constant(value)).padding().frame(width: 295)
+                try await Task.sleep(for: .milliseconds(125))
+                let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                }
+                let request = VNRecognizeTextRequest()
+                request.recognitionLanguages = ["fr-FR"]
+                try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+                let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                XCTAssertTrue(lines.localizedStandardContains(method.secretTitle), lines)
+                if value.isEmpty {
+                    XCTAssertTrue(lines.localizedStandardContains("Saisissez votre"), lines)
+                } else {
+                    XCTAssertFalse(lines.contains(value))
+                }
+            }
+            await withCheckedContinuation { done in host.dismiss(animated: false) { done.resume() } }
+        }
+    }
+
     @MainActor func testBackupSelectionShowsVerificationSuccessAndErrors() async throws {
         let keys = VaultKeys()
         let source = try VaultStore(root: location("source"), keys: keys, create: true)

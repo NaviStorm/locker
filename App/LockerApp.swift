@@ -31,9 +31,11 @@ struct RootScreen: View {
                     ScrollView {
                         let layout = wide ? AnyLayout(HStackLayout(spacing: 26)) : AnyLayout(VStackLayout(spacing: 20))
                         layout {
-                            LockerCover(compact: !wide)
-                                .frame(maxWidth: wide ? 250 : .infinity)
-                                .frame(height: wide ? 276 : nil)
+                            if wide || geometry.size.height >= 440 || !model.authenticationMethod.isCustom || recovering {
+                                LockerCover(compact: !wide)
+                                    .frame(maxWidth: wide ? 250 : .infinity)
+                                    .frame(height: wide ? 276 : nil)
+                            }
                             accessControls
                         }
                         .padding(14)
@@ -100,7 +102,7 @@ struct RootScreen: View {
                     }
                 }
                 if model.authenticationMethod.isCustom {
-                    VaultSecretField(title: model.authenticationMethod.secretTitle, method: model.authenticationMethod, text: $unlockSecret)
+                    UnlockSecretField(method: model.authenticationMethod, text: $unlockSecret)
                 }
                 Button {
                     unlockSelected()
@@ -167,6 +169,35 @@ struct RootScreen: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .disabled(model.opening || model.removingVault)
+    }
+}
+
+struct UnlockSecretField: View {
+    let method: VaultAuthenticationMethod
+    @Binding var text: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(method.secretTitle)
+                .font(.headline)
+                .accessibilityHidden(true)
+            VaultSecretField(title: method == .numericCode ? "Saisissez votre code" : "Saisissez votre mot de passe",
+                             method: method, text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .accessibilityLabel(method.secretTitle)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(.background, in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(focused ? Color.accentColor : .secondary, lineWidth: focused ? 2 : 1)
+                        .allowsHitTesting(false)
+                }
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { focused = true })
+        }
     }
 }
 
