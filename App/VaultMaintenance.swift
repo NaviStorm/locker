@@ -1,14 +1,64 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor @Observable
+final class BackupOperation {
+    enum Action { case create, verify, restore }
+    enum Status: Equatable {
+        case idle, working(String), success(String), failure(String)
+    }
+    var status = Status.idle
+    var busy: Bool {
+        if case .working = status { return true }
+        return false
+    }
+
+    func handle(_ selection: Result<URL, Error>, action: Action, code: String, model: LockerModel) async {
+        guard !busy else { return }
+        guard let store = model.store else { status = .failure(VaultError.locked.localizedDescription); return }
+        defer { if model.store !== store { status = .idle } }
+        do {
+            let url = try selection.get()
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            model.activity()
+            switch action {
+            case .create:
+                status = .working("Création de la sauvegarde…")
+                let saved = try await store.writeBackup(in: url)
+                guard model.store === store else { return }
+                status = .success("Sauvegarde créée • " + saved.lastPathComponent)
+            case .verify, .restore:
+                let restoring = action == .restore
+                status = .working(restoring ? "Restauration en cours…" : "Vérification de la sauvegarde…")
+                let count = try await store.readBackup(url, code: code, restore: restoring)
+                guard model.store === store else { return }
+                let total = count == 1 ? "1 élément" : "\(count) éléments"
+                if restoring {
+                    let library = try await store.library()
+                    guard model.store === store else { return }
+                    model.library = library
+                    status = .success("Restauration terminée • " + total)
+                } else {
+                    status = .success("Sauvegarde vérifiée • " + total)
+                }
+            }
+        } catch {
+            guard model.store === store else { return }
+            let failure = error as NSError
+            status = failure.domain == NSCocoaErrorDomain && failure.code == NSUserCancelledError
+                ? .idle : .failure(error.localizedDescription)
+        }
+    }
+}
+
 struct BackupScreen: View {
     let model: LockerModel
-    private enum Action { case create, verify, restore }
-    @State private var action = Action.create
+    @State var operation = BackupOperation()
+    @State private var action = BackupOperation.Action.create
     @State private var choosing = false
     @State private var code = ""
-    @State private var result = ""
-    @State private var busy = false
+    @FocusState private var enteringCode: Bool
 
     var body: some View {
         Form {
@@ -19,60 +69,45 @@ struct BackupScreen: View {
             Section("Lire une sauvegarde") {
                 SecureField("Code de récupération de la sauvegarde", text: $code)
                     .autocorrectionDisabled()
+                    .focused($enteringCode)
                 Button("Tester la restauration…") { pick(.verify) }.disabled(code.isEmpty)
                 Button("Restaurer dans ce coffre…") { pick(.restore) }.disabled(code.isEmpty)
                 Text("Pour restaurer, ouvrez un coffre personnel vide en mode local. Il conserve son propre code de récupération. Les partages et les comptes de synchronisation restent à configurer.")
                     .font(.footnote)
             }
-            if busy { ProgressView("Traitement de la sauvegarde…") }
-            if !result.isEmpty { Text(result) }
         }
         .vaultFormStyle().navigationTitle("Sauvegarde et restauration")
-        .disabled(busy)
-        .fileImporter(isPresented: $choosing, allowedContentTypes: action == .create ? [.folder] : [UTType(exportedAs: "fr.locker.document-backup", conformingTo: .data)]) { selection in
-            guard case let .success(url) = selection else {
-                if case let .failure(error) = selection, (error as NSError).code != NSUserCancelledError {
-                    result = error.localizedDescription
+        .disabled(operation.busy)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if operation.status != .idle {
+                Group {
+                    switch operation.status {
+                    case .idle: EmptyView()
+                    case let .working(message): ProgressView(message)
+                    case let .success(message): Label(message, systemImage: "checkmark.circle.fill")
+                    case let .failure(message): Label(message, systemImage: "exclamationmark.triangle.fill")
+                    }
                 }
-                return
+                .font(.callout.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(.regularMaterial)
             }
-            execute(url)
+        }
+        .fileImporter(isPresented: $choosing, allowedContentTypes: action == .create ? [.folder] : [UTType(exportedAs: "fr.locker.document-backup", conformingTo: .data)]) { selection in
+            let mode = action
+            let recovery = code
+            if case .success = selection { code = "" }
+            Task { await operation.handle(selection, action: mode, code: recovery, model: model) }
         }
     }
 
-    private func pick(_ value: Action) {
+    private func pick(_ value: BackupOperation.Action) {
+        enteringCode = false
         model.activity()
         action = value
-        result = ""
+        operation.status = .idle
         choosing = true
-    }
-
-    private func execute(_ url: URL) {
-        guard let store = model.store else { return }
-        let mode = action
-        let recovery = code
-        code = ""
-        busy = true
-        model.activity()
-        Task {
-            let access = url.startAccessingSecurityScopedResource()
-            defer {
-                if access { url.stopAccessingSecurityScopedResource() }
-                busy = false
-            }
-            do {
-                switch mode {
-                case .create:
-                    let saved = try await store.writeBackup(in: url)
-                    result = "Sauvegarde créée : " + saved.lastPathComponent
-                case .verify, .restore:
-                    let count = try await store.readBackup(url, code: recovery, restore: mode == .restore)
-                    guard model.store === store else { return }
-                    if mode == .restore { model.library = try await store.library() }
-                    result = mode == .restore ? "\(count) éléments restaurés." : "Vérification réussie pour \(count) éléments."
-                }
-            } catch { result = error.localizedDescription }
-        }
     }
 }
 

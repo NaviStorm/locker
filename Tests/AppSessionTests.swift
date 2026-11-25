@@ -5,6 +5,7 @@ import PDFKit
 import LocalAuthentication
 import Security
 import SwiftUI
+import Vision
 #endif
 @testable import Locker
 
@@ -119,6 +120,48 @@ final class AppSessionTests: VaultTestCase {
                                                                  gate: SessionGate(), protectNewKey: true, method: .biometrics)
         let afterChange = try await restored.preview(document)
         XCTAssertEqual(afterChange, contents)
+    }
+
+    @MainActor func testBackupSelectionShowsVerificationSuccessAndErrors() async throws {
+        let keys = VaultKeys()
+        let source = try VaultStore(root: location("source"), keys: keys, create: true)
+        _ = try await source.importData(Data([1, 2, 3]), name: "Document fictif")
+        let backup = try await source.writeBackup(in: location("."))
+        let model = LockerModel(base: location("destination"))
+        let root = location("coffre")
+        let target = try VaultStore(root: root, keys: VaultKeys(), create: true)
+        _ = try await target.importData(Data([4]), name: "Déjà présent")
+        model.store = target
+        let before = try Data(contentsOf: root.appendingPathComponent("catalog.v1"))
+        let operation = BackupOperation()
+
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let host = UIHostingController(rootView: BackupScreen(model: model, operation: operation)
+            .frame(width: 300, height: 290))
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+
+        await operation.handle(.success(backup), action: .verify, code: keys.recoveryCode, model: model)
+        XCTAssertEqual(operation.status, .success("Sauvegarde vérifiée • 1 élément"))
+        try await Task.sleep(for: .milliseconds(250))
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLanguages = ["fr-FR"]
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        XCTAssertTrue(lines.joined(separator: " ").localizedStandardContains("Sauvegarde vérifiée"),
+                      "Le résultat doit être visible sans faire défiler le formulaire.")
+        await operation.handle(.success(backup), action: .verify, code: VaultKeys().recoveryCode, model: model)
+        guard case let .failure(message) = operation.status else { return XCTFail("Erreur de code invisible") }
+        XCTAssertFalse(message.isEmpty)
+        await operation.handle(.failure(CocoaError(.fileReadNoPermission)), action: .verify, code: "", model: model)
+        guard case .failure = operation.status else { return XCTFail("Erreur de sélection invisible") }
+        await operation.handle(.failure(CocoaError(.userCancelled)), action: .verify, code: "", model: model)
+        XCTAssertEqual(operation.status, .idle)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("catalog.v1")), before)
     }
 
     @MainActor func testFirstProtectedVaultOnDuoSimulator() async throws {
