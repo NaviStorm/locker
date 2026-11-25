@@ -9,6 +9,7 @@ struct SettingsScreen: View {
     @State private var vaultName: String
     @State private var nameError: String?
     @State private var protectionError: String?
+    @State private var secretChange: SecretChange?
     @State private var password = ""
     @State private var savedPasswordFor: ProviderSettings?
     @State private var editingPassword = false
@@ -53,6 +54,10 @@ struct SettingsScreen: View {
                         get: { model.requiresAuthentication },
                         set: { value in
                             protectionError = nil
+                            if model.authenticationMethod.isCustom && !value {
+                                secretChange = .disable
+                                return
+                            }
                             Task {
                                 do { try await model.setAuthenticationRequired(value) }
                                 catch { protectionError = error.localizedDescription }
@@ -62,9 +67,18 @@ struct SettingsScreen: View {
                     .disabled(model.changingProtection)
                     AuthenticationMethodPicker(selection: Binding(
                         get: { model.authenticationMethod },
-                        set: { model.rememberAuthenticationMethod($0) }
+                        set: { target in
+                            if target.isCustom || model.authenticationMethod.isCustom {
+                                secretChange = .method(target)
+                            } else { model.rememberAuthenticationMethod(target) }
+                        }
                     ))
                     .disabled(model.changingProtection)
+                    if model.authenticationMethod.isCustom {
+                        Button(model.authenticationMethod == .numericCode ? "Modifier le code numérique…" : "Modifier le mot de passe…") {
+                            secretChange = .method(model.authenticationMethod)
+                        }
+                    }
                     if let protectionError { Text(protectionError).foregroundStyle(.red) }
                     Text("Si vous désactivez l’authentification, toute personne utilisant l’appareil déverrouillé pourra l’ouvrir.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -140,11 +154,15 @@ struct SettingsScreen: View {
             .modifier(VaultDismissToolbar())
             .confirmationDialog("Créer un nouveau coffre avec de nouvelles clés et conserver l’ancien hors ligne ?", isPresented: $rotate) {
                 Button("Rechiffrer les documents") {
+                    if model.authenticationMethod.isCustom { secretChange = .rotate; return }
                     Task {
                         do { try await model.rotatePersonal(); dismiss() }
                         catch { errorText = error.localizedDescription }
                     }
                 }
+            }
+            .sheet(item: $secretChange) { change in
+                VaultSecretEditor(model: model, action: change)
             }
             .task(id: model.syncing) { await refreshProtection() }
             .onChange(of: family) { _, visible in

@@ -120,6 +120,63 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @MainActor func testCustomVaultMethodsOnDuoKeychain() async throws {
+        guard ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
+            throw XCTSkip("Trousseau du simulateur iPhone Duo uniquement.")
+        }
+        final class TestDevicePasscode: LAContext {
+            override func evaluateAccessControl(_ accessControl: SecAccessControl, operation: LAAccessControlOperation,
+                                                localizedReason: String) async throws -> Bool { true }
+        }
+        let id = UUID().uuidString
+        let base = location("identification")
+        let root = base.appendingPathComponent(id)
+        let device = DeviceKeychain(account: id, protectNewKey: false)
+        let pin = "0198374652"
+        let password = "Rosée!Fictive72"
+        defer {
+            SecItemDelete(device.query as CFDictionary)
+            UserDefaults.standard.removeObject(forKey: "authenticationMethod." + id)
+        }
+        let first = try VaultAccess.open(.create, at: root, device: device, context: LAContext(), gate: SessionGate())
+        let doc = try await first.importData(Data([1, 3, 5]), name: "Document fictif")
+        let recovery = try await first.recoveryCode()
+        try device.replaceKey(try device.read(context: LAContext()), method: .numericCode, newSecret: pin,
+                              required: true, context: LAContext(), gate: first.gate)
+        first.gate.revoke()
+        XCTAssertEqual(device.customMethod(), .numericCode)
+        XCTAssertThrowsError(try device.read(context: LAContext()))
+        func open(_ mode: AccessMode) async throws -> VaultStore {
+            try await LockerModel.authenticateAndOpen(mode, at: root, context: TestDevicePasscode(),
+                                                       gate: SessionGate(), protectNewKey: false, method: .passcode)
+        }
+        do { _ = try await open(.unlock); XCTFail("Ouverture sans le secret du coffre") } catch VaultSecretError.incorrect {}
+        do { _ = try await open(.unlockWithSecret("9999999999")); XCTFail("Code incorrect accepté") } catch VaultSecretError.incorrect {}
+        let session = try await open(.unlockWithSecret(pin))
+        let model = LockerModel(base: base)
+        try await model.adoptRotated(session, slotID: id, code: recovery)
+        do {
+            try await model.setSecretProtection(to: .passcode, required: false, currentSecret: "0000000000", newSecret: "")
+            XCTFail("Désactivation sans le code actuel")
+        } catch VaultSecretError.incorrect {}
+        XCTAssertEqual(device.customMethod(), .numericCode)
+        try await model.setSecretProtection(to: .vaultPassword, required: true, currentSecret: pin, newSecret: password)
+        model.lock()
+        XCTAssertEqual(device.customMethod(), .vaultPassword)
+        do { _ = try await open(.unlockWithSecret(pin)); XCTFail("Ancien code accepté") } catch VaultSecretError.incorrect {}
+        let reopened = try await open(.unlockWithSecret(password))
+        let data = try await reopened.preview(doc)
+        XCTAssertEqual(data, Data([1, 3, 5]))
+        reopened.gate.revoke()
+        do { _ = try await open(.recover(VaultKeys().recoveryCode)); XCTFail("Mauvais code de récupération accepté") } catch {}
+        XCTAssertEqual(device.customMethod(), .vaultPassword)
+        let repaired = try await open(.recover(recovery))
+        XCTAssertNil(device.customMethod())
+        XCTAssertTrue(device.requiresAuthentication())
+        let afterRecovery = try await repaired.preview(doc)
+        XCTAssertEqual(afterRecovery, data)
+    }
+
     @MainActor func testClosedDuoReturnButtons() async throws {
         guard #available(iOS 27.1, *),
               ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
@@ -354,7 +411,7 @@ final class AppSessionTests: VaultTestCase {
             requestedMethods.append(method)
             if deny { throw VaultError.locked }
             switch mode {
-            case .unlock: return try VaultStore(root: root, keys: keys, gate: gate)
+            case .unlock, .unlockWithSecret: return try VaultStore(root: root, keys: keys, gate: gate)
             case .create:
                 newProtection = protectNewKey
                 return try VaultStore(root: root, keys: VaultKeys(), create: true, gate: gate)

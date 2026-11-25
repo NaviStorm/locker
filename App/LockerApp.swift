@@ -17,6 +17,7 @@ struct RootScreen: View {
     @Bindable var model: LockerModel
     @Environment(\.scenePhase) private var phase
     @State private var code = ""
+    @State private var unlockSecret = ""
     @State private var protectNewKey = true
     @State private var recovering = false
 
@@ -50,6 +51,7 @@ struct RootScreen: View {
         .safeAreaInset(edge: .top, spacing: 0) { IncomingShares(model: model) }
         .background(PrivacyMonitor(activity: { model.activity() }, background: {
             code = ""
+            unlockSecret = ""
             #if os(macOS)
             if !model.changingProtection && (!model.opening || model.store != nil) { model.lock() }
             #else
@@ -59,8 +61,10 @@ struct RootScreen: View {
         .tint(Color.lockerTint)
         .privacySensitive()
         .onChange(of: model.store != nil) { _, opened in
-            if opened { protectNewKey = true }
+            if opened { protectNewKey = true; unlockSecret = "" }
         }
+        .onChange(of: model.slot) { unlockSecret = "" }
+        .onChange(of: recovering) { unlockSecret = "" }
         .onChange(of: phase) { _, new in
             if new == .background { code = ""; model.lock() }
         }
@@ -76,6 +80,12 @@ struct RootScreen: View {
         } message: { Text(model.problem ?? "") }
     }
 
+    private func unlockSelected(after: (() -> Void)? = nil) {
+        let mode: AccessMode = model.authenticationMethod.isCustom ? .unlockWithSecret(unlockSecret) : .unlock
+        unlockSecret = ""
+        model.open(mode, afterOpen: after)
+    }
+
     private var accessControls: some View {
         VStack(alignment: .leading, spacing: 16) {
             if !model.slots.isEmpty && !recovering {
@@ -84,16 +94,20 @@ struct RootScreen: View {
                         Text(model.pickerTitle(for: $0)).tag($0)
                     }
                 }
+                if model.authenticationMethod.isCustom {
+                    VaultSecretField(title: model.authenticationMethod.secretTitle, method: model.authenticationMethod, text: $unlockSecret)
+                }
                 Button {
-                    model.open(.unlock)
+                    unlockSelected()
                 } label: {
                     Label("Ouvrir le coffre", systemImage: "lock.open")
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent).controlSize(.large)
+                .disabled(model.authenticationMethod.isCustom && unlockSecret.isEmpty)
                 if model.vaultKinds[model.slot] != .family {
                     Button("Supprimer de cet appareil…", role: .destructive) {
-                        model.open(.unlock) { model.requestLocalRemoval() }
-                    }
+                        unlockSelected { model.requestLocalRemoval() }
+                    }.disabled(model.authenticationMethod.isCustom && unlockSecret.isEmpty)
                 }
                 Divider()
             }
@@ -104,6 +118,9 @@ struct RootScreen: View {
                 if !model.slots.isEmpty {
                     Toggle("Réparer le coffre sélectionné", isOn: $model.repairSelected)
                     if model.repairSelected {
+                        if model.authenticationMethod.isCustom {
+                            Text("Après vérification du code de récupération, le coffre utilisera l’authentification système.").font(.footnote)
+                        }
                         Picker("Coffre à réparer", selection: $model.slot) {
                             ForEach(model.slots, id: \.self) {
                                 Text(model.pickerTitle(for: $0)).tag($0)

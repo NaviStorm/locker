@@ -24,6 +24,8 @@ struct AuthenticationMethodPicker: View {
             Text(biometryName(context.biometryType))
                 .tag(VaultAuthenticationMethod.biometrics)
                 .disabled(!available)
+            Text("Code numérique du coffre").tag(VaultAuthenticationMethod.numericCode)
+            Text("Mot de passe du coffre").tag(VaultAuthenticationMethod.vaultPassword)
         }
     }
 }

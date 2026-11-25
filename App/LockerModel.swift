@@ -13,12 +13,17 @@ final class LockerModel {
     var removalRequest: String?
     var slots: [String] = []
     var slot = "" {
-        didSet { if slot != oldValue { authenticationMethod = .preferred(for: slot) } }
+        didSet { if slot != oldValue { authenticationMethod = Self.method(for: slot) } }
     }
     private(set) var authenticationMethod = VaultAuthenticationMethod.passcode
 
+    static func method(for slot: String) -> VaultAuthenticationMethod {
+        guard !slot.isEmpty else { return .passcode }
+        return DeviceKeychain(account: slot).customMethod() ?? .preferred(for: slot)
+    }
+
     func rememberAuthenticationMethod(_ method: VaultAuthenticationMethod) {
-        guard store != nil else { return }
+        guard store != nil, !authenticationMethod.isCustom, !method.isCustom else { return }
         method.remember(for: slot)
         authenticationMethod = method
     }
@@ -82,7 +87,7 @@ final class LockerModel {
             if let bytes = try? Self.nameItem(id).read() { vaultNames[id] = String(data: bytes, encoding: .utf8) }
         }
         slot = slots.first ?? ""
-        authenticationMethod = .preferred(for: slot)
+        authenticationMethod = Self.method(for: slot)
     }
 
     func adoptRotated(_ session: VaultStore, slotID: String, code: String) async throws {
@@ -178,9 +183,26 @@ final class LockerModel {
                                                 protectNewKey: Bool, method: VaultAuthenticationMethod) async throws -> VaultStore {
         var device = DeviceKeychain(account: root.lastPathComponent, protectNewKey: protectNewKey)
         switch mode {
+        case let .unlockWithSecret(secret):
+            guard device.customMethod() != nil else { throw VaultError.changed }
+            device.secret = secret
+            context.interactionNotAllowed = true
+            let protectedDevice = device
+            return try await Task.detached {
+                try VaultAccess.open(mode, at: root, device: protectedDevice, context: context, gate: gate)
+            }.value
         case .unlock:
+            guard device.customMethod() == nil else { throw VaultSecretError.incorrect }
             device.protectNewKey = device.requiresAuthentication()
-        case .recover where FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.v1").path):
+        case let .recover(code) where FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.v1").path):
+            if device.customMethod() != nil {
+                let keys = try VaultKeys(code: code)
+                _ = try VaultStore.readCatalog(root.appendingPathComponent("catalog.v1"), keys: keys)
+                try await VaultAuthenticationMethod.passcode.confirm(using: context, reason: "Réparer la protection de ce coffre")
+                try device.replaceKey(keys, method: .passcode, newSecret: nil, required: true, context: context, gate: gate)
+                VaultAuthenticationMethod.passcode.remember(for: root.lastPathComponent)
+                return try VaultAccess.open(.unlock, at: root, device: device, context: context, gate: gate)
+            }
             device.protectNewKey = device.requiresAuthentication()
         default: break
         }
@@ -190,6 +212,38 @@ final class LockerModel {
         return try await Task.detached {
             try VaultAccess.open(mode, at: root, device: device, context: context, gate: gate)
         }.value
+    }
+
+    func setSecretProtection(to target: VaultAuthenticationMethod, required: Bool,
+                             currentSecret: String, newSecret: String) async throws {
+        guard let session = store, !opening, !changingProtection else { throw VaultError.unavailable }
+        let current = authenticationMethod
+        guard current.isCustom || target.isCustom else { throw VaultError.changed }
+        if target.isCustom { try target.validateNewSecret(newSecret) }
+        let auth = LAContext()
+        activity()
+        context = auth
+        changingProtection = true
+        defer {
+            auth.invalidate()
+            if context === auth { context = nil; changingProtection = false; activity() }
+        }
+        if !current.isCustom {
+            try await current.confirm(using: auth, reason: "Modifier le déverrouillage du coffre")
+        } else if !target.isCustom && required {
+            try await target.confirm(using: auth, reason: "Confirmer la nouvelle méthode de déverrouillage")
+        }
+        let device = DeviceKeychain(account: slot, secret: current.isCustom ? currentSecret : nil)
+        try await Task.detached {
+            try session.gate.check()
+            let keys = try device.read(context: auth)
+            try device.replaceKey(keys, method: target, newSecret: newSecret, required: required,
+                                  context: auth, gate: session.gate)
+        }.value
+        guard store === session else { throw VaultError.locked }
+        target.remember(for: slot)
+        authenticationMethod = target
+        requiresAuthentication = required
     }
 
     func setAuthenticationRequired(_ required: Bool) async throws {
@@ -213,7 +267,7 @@ final class LockerModel {
         let selected = newSlot ? UUID().uuidString : slot
         guard UUID(uuidString: selected) != nil else { return }
         let root = base.appendingPathComponent(selected)
-        let method = VaultAuthenticationMethod.preferred(for: selected)
+        let method = Self.method(for: selected)
         let gate = SessionGate()
         let auth = LAContext()
         auth.localizedReason = "Ouvrir le coffre documentaire"
@@ -238,6 +292,7 @@ final class LockerModel {
                 try gate.check()
                 requiresAuthentication = DeviceKeychain(account: selected).requiresAuthentication()
                 slot = selected
+                authenticationMethod = Self.method(for: selected)
                 if !slots.contains(selected) { slots.append(selected) }
                 library = list
                 configuration = config
