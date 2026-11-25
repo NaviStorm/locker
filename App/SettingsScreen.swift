@@ -139,6 +139,7 @@ struct SettingsScreen: View {
                     }
                     if !errorText.isEmpty { Text(errorText).foregroundStyle(.red) }
                 }
+                AboutLockerSection()
                 Section {
                     if let protectionReason {
                         Label(protectionReason, systemImage: "person.2")
