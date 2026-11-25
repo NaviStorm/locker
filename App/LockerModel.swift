@@ -4,7 +4,20 @@ import Observation
 
 @MainActor @Observable
 final class LockerModel {
-    typealias OpenSession = (AccessMode, URL, LAContext, SessionGate, Bool, VaultAuthenticationMethod) async throws -> VaultStore
+    struct NewVaultSecret {
+        let method: VaultAuthenticationMethod
+        let value: String
+    }
+
+    struct NewVaultSetup: Identifiable {
+        let id = UUID()
+        let mode: AccessMode
+        let newSlot: Bool
+        let afterOpen: (() -> Void)?
+    }
+
+    var newVaultSetup: NewVaultSetup?
+    typealias OpenSession = (AccessMode, URL, LAContext, SessionGate, Bool, VaultAuthenticationMethod, NewVaultSecret?) async throws -> VaultStore
     @ObservationIgnored private let openSession: OpenSession
     let base: URL
     var vaultNames: [String: String] = [:]
@@ -155,6 +168,7 @@ final class LockerModel {
     }
 
     func lock() {
+        newVaultSetup = nil
         removalRequest = nil
         if let store, let kind = VaultKind.cached(in: store.root) { vaultKinds[slot] = kind }
         accessGate?.revoke()
@@ -180,8 +194,19 @@ final class LockerModel {
 
     nonisolated static func authenticateAndOpen(_ mode: AccessMode, at root: URL,
                                                 context: LAContext, gate: SessionGate,
-                                                protectNewKey: Bool, method: VaultAuthenticationMethod) async throws -> VaultStore {
+                                                protectNewKey: Bool, method: VaultAuthenticationMethod,
+                                                newSecret: NewVaultSecret? = nil) async throws -> VaultStore {
         var device = DeviceKeychain(account: root.lastPathComponent, protectNewKey: protectNewKey)
+        if let newSecret {
+            switch mode {
+            case .create, .recover: break
+            case .unlock, .unlockWithSecret: throw VaultError.changed
+            }
+            guard protectNewKey, newSecret.method.isCustom else { throw VaultError.changed }
+            try newSecret.method.validateNewSecret(newSecret.value)
+            device.secret = newSecret.value
+            device.newMethod = newSecret.method
+        }
         switch mode {
         case let .unlockWithSecret(secret):
             guard device.customMethod() != nil else { throw VaultError.changed }
@@ -198,15 +223,21 @@ final class LockerModel {
             if device.customMethod() != nil {
                 let keys = try VaultKeys(code: code)
                 _ = try VaultStore.readCatalog(root.appendingPathComponent("catalog.v1"), keys: keys)
-                try await VaultAuthenticationMethod.passcode.confirm(using: context, reason: "Réparer la protection de ce coffre")
-                try device.replaceKey(keys, method: .passcode, newSecret: nil, required: true, context: context, gate: gate)
-                VaultAuthenticationMethod.passcode.remember(for: root.lastPathComponent)
+                if let newSecret {
+                    try device.replaceKey(keys, method: newSecret.method, newSecret: newSecret.value,
+                                          required: true, context: context, gate: gate)
+                } else {
+                    try await VaultAuthenticationMethod.passcode.confirm(using: context, reason: "Réparer la protection de ce coffre")
+                    try device.replaceKey(keys, method: .passcode, newSecret: nil, required: true, context: context, gate: gate)
+                    VaultAuthenticationMethod.passcode.remember(for: root.lastPathComponent)
+                }
                 return try VaultAccess.open(.unlock, at: root, device: device, context: context, gate: gate)
             }
+            guard newSecret == nil else { throw VaultError.changed }
             device.protectNewKey = device.requiresAuthentication()
         default: break
         }
-        if device.protectNewKey {
+        if device.protectNewKey && newSecret == nil {
             try await method.confirm(using: context, reason: "Accéder à ce coffre sur cet appareil")
         }
         return try await Task.detached {
@@ -261,9 +292,27 @@ final class LockerModel {
         if store === session { requiresAuthentication = required }
     }
 
+    func completeNewVaultSetup(_ setup: NewVaultSetup, with credential: NewVaultSecret) {
+        guard newVaultSetup?.id == setup.id else { return }
+        newVaultSetup = nil
+        open(setup.mode, newSlot: setup.newSlot, newSecret: credential, afterOpen: setup.afterOpen)
+    }
+
     func open(_ mode: AccessMode, newSlot: Bool = false, protectNewKey: Bool = true,
-              afterOpen: (() -> Void)? = nil) {
+              newSecret: NewVaultSecret? = nil, afterOpen: (() -> Void)? = nil) {
         guard !opening, store == nil else { return }
+        #if targetEnvironment(simulator)
+        // The simulator cannot evaluate the device-passcode access control (LA error -1020).
+        if newSecret == nil {
+            switch mode {
+            case .create where newSlot && protectNewKey,
+                 .recover where (newSlot ? protectNewKey : authenticationMethod.isCustom):
+                newVaultSetup = NewVaultSetup(mode: mode, newSlot: newSlot, afterOpen: afterOpen)
+                return
+            default: break
+            }
+        }
+        #endif
         let selected = newSlot ? UUID().uuidString : slot
         guard UUID(uuidString: selected) != nil else { return }
         let root = base.appendingPathComponent(selected)
@@ -277,7 +326,7 @@ final class LockerModel {
         Task {
             defer { if accessGate === gate { opening = false; auth.invalidate(); context = nil } }
             do {
-                let session = try await openSession(mode, root, auth, gate, protectNewKey, method)
+                let session = try await openSession(mode, root, auth, gate, protectNewKey, method, newSecret)
                 let list = try await session.library()
                 let shared = await session.family != nil
                 let config: ProviderSettings

@@ -120,6 +120,82 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @MainActor func testFirstProtectedVaultOnDuoSimulator() async throws {
+        guard ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
+            throw XCTSkip("Trousseau du simulateur iPhone Duo uniquement.")
+        }
+        let base = location("premier-coffre")
+        let model = LockerModel(base: base)
+        var finished = false
+        model.open(.create, newSlot: true) { finished = true }
+        let setup = try XCTUnwrap(model.newVaultSetup)
+        XCTAssertTrue(model.slots.isEmpty)
+        XCTAssertNil(model.store)
+        XCTAssertFalse(finished)
+        model.lock()
+        XCTAssertNil(model.newVaultSetup)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: base.path))
+
+        func settle() async throws {
+            for _ in 0..<200 where model.opening { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertFalse(model.opening)
+        }
+
+        model.completeNewVaultSetup(setup, with: .init(method: .numericCode, value: "0198374652"))
+        XCTAssertFalse(model.opening)
+        model.open(.create, newSlot: true)
+        model.completeNewVaultSetup(try XCTUnwrap(model.newVaultSetup), with: .init(method: .numericCode, value: "1234"))
+        try await settle()
+        XCTAssertNil(model.store)
+        XCTAssertTrue(model.slots.isEmpty)
+        XCTAssertEqual(model.problem, VaultSecretError.invalidPIN.localizedDescription)
+        model.lock()
+
+        for (method, value) in [(VaultAuthenticationMethod.numericCode, "0198374652"), (.vaultPassword, "Rosée!Fictive72")] {
+            finished = false
+            model.open(.create, newSlot: true) { finished = true }
+            model.completeNewVaultSetup(try XCTUnwrap(model.newVaultSetup), with: .init(method: method, value: value))
+            try await settle()
+            let vault = try XCTUnwrap(model.store, model.problem ?? "")
+            let device = DeviceKeychain(account: model.slot)
+            defer { SecItemDelete(device.query as CFDictionary) }
+            XCTAssertTrue(finished)
+            let recovery = try XCTUnwrap(model.recovery)
+            XCTAssertTrue(device.requiresAuthentication())
+            XCTAssertEqual(device.customMethod(), method)
+            XCTAssertThrowsError(try device.read(context: LAContext()))
+            let doc = try await vault.importData(Data([42]), name: "Exemple")
+            model.lock()
+            model.open(.unlockWithSecret("0000000000"))
+            try await settle()
+            XCTAssertNil(model.store)
+            model.open(.unlockWithSecret(value))
+            try await settle()
+            let reopened = try XCTUnwrap(model.store)
+            let data = try await reopened.preview(doc)
+            XCTAssertEqual(data, Data([42]))
+            model.lock()
+            let replacement = LockerModel.NewVaultSecret(method: .numericCode, value: "4028951673")
+            model.open(.recover(VaultKeys().recoveryCode))
+            model.completeNewVaultSetup(try XCTUnwrap(model.newVaultSetup), with: replacement)
+            try await settle()
+            XCTAssertNil(model.store)
+            XCTAssertEqual(device.customMethod(), method)
+            model.open(.recover(recovery))
+            let repair = try XCTUnwrap(model.newVaultSetup)
+            model.completeNewVaultSetup(repair, with: replacement)
+            try await settle()
+            XCTAssertNotNil(model.store)
+            model.lock()
+            model.open(.unlockWithSecret(replacement.value))
+            try await settle()
+            let repaired = try XCTUnwrap(model.store)
+            let restored = try await repaired.preview(doc)
+            XCTAssertEqual(restored, data)
+            model.lock()
+        }
+    }
+
     @MainActor func testCustomVaultMethodsOnDuoKeychain() async throws {
         guard ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == "iPhone19,4" else {
             throw XCTSkip("Trousseau du simulateur iPhone Duo uniquement.")
@@ -407,7 +483,7 @@ final class AppSessionTests: VaultTestCase {
         VaultAuthenticationMethod.biometrics.remember(for: otherID)
         defer { UserDefaults.standard.removeObject(forKey: "authenticationMethod." + otherID) }
         var requestedMethods: [VaultAuthenticationMethod] = []
-        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey, method in
+        let model = LockerModel(base: base) { mode, root, _, gate, protectNewKey, method, _ in
             requestedMethods.append(method)
             if deny { throw VaultError.locked }
             switch mode {

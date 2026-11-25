@@ -19,6 +19,59 @@ struct VaultSecretField: View {
     }
 }
 
+struct NewVaultSecretSettings: View {
+    let mode: AccessMode
+    let create: (LockerModel.NewVaultSecret) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var method = VaultAuthenticationMethod.numericCode
+    @State private var secret = ""
+    @State private var confirmation = ""
+    @State private var errorText = ""
+
+    private var isRecovery: Bool {
+        if case .recover = mode { return true }
+        return false
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Déverrouiller avec", selection: $method) {
+                        Text("Code numérique du coffre").tag(VaultAuthenticationMethod.numericCode)
+                        Text("Mot de passe du coffre").tag(VaultAuthenticationMethod.vaultPassword)
+                    }
+                    VaultSecretField(title: method.secretTitle, method: method, text: $secret, isNew: true)
+                    VaultSecretField(title: "Confirmer la saisie", method: method, text: $confirmation, isNew: true)
+                } header: {
+                    Text("Protection du coffre")
+                } footer: {
+                    Text(method == .numericCode ? "Choisissez au moins 10 chiffres." :
+                         "Choisissez au moins 12 caractères avec une majuscule, une minuscule, un chiffre et un symbole.")
+                }
+                Text("Le simulateur ne prend pas en charge le code de l’appareil pour ce coffre.")
+                if !errorText.isEmpty { Text(errorText).foregroundStyle(.red) }
+            }
+            .vaultFormStyle()
+            .navigationTitle(isRecovery ? "Réglages de récupération" : "Réglages du nouveau coffre")
+            .onChange(of: method) { secret = ""; confirmation = ""; errorText = "" }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isRecovery ? "Récupérer" : "Créer") {
+                        do {
+                            try method.validateNewSecret(secret)
+                            guard secret == confirmation else { throw VaultSecretError.mismatch }
+                            create(.init(method: method, value: secret))
+                        } catch { errorText = error.localizedDescription }
+                    }
+                    .disabled(secret.isEmpty || confirmation.isEmpty)
+                }
+            }
+        }
+    }
+}
+
 enum SecretChange: Identifiable {
     case method(VaultAuthenticationMethod), disable, rotate
 

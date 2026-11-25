@@ -74,6 +74,11 @@ struct RootScreen: View {
                 model.tick()
             }
         }
+        .sheet(item: $model.newVaultSetup) { setup in
+            NewVaultSecretSettings(mode: setup.mode) { credential in
+                model.completeNewVaultSetup(setup, with: credential)
+            }
+        }
         .modifier(LocalVaultRemovalDialog(model: model, request: $model.removalRequest))
         .alert("Locker", isPresented: Binding(get: { model.problem != nil }, set: { if !$0 { model.problem = nil } })) {
             Button("Fermer") { model.problem = nil }
@@ -119,7 +124,11 @@ struct RootScreen: View {
                     Toggle("Réparer le coffre sélectionné", isOn: $model.repairSelected)
                     if model.repairSelected {
                         if model.authenticationMethod.isCustom {
+                            #if targetEnvironment(simulator)
+                            Text("Le code de récupération permet de choisir un nouveau secret pour ce coffre.").font(.footnote)
+                            #else
                             Text("Après vérification du code de récupération, le coffre utilisera l’authentification système.").font(.footnote)
+                            #endif
                         }
                         Picker("Coffre à réparer", selection: $model.slot) {
                             ForEach(model.slots, id: \.self) {
