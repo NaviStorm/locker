@@ -48,7 +48,7 @@ struct IdentityScreen: View {
                     }.disabled(!confirmed || peer == nil || received.isEmpty)
                 }
                 if !problem.isEmpty { Text(problem) }
-            }.formStyle(.grouped).navigationTitle("Identités et invitations")
+            }.vaultFormStyle().navigationTitle("Identités et invitations")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
         }.frame(idealWidth: 560, idealHeight: 540)
         .task {

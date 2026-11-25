@@ -167,7 +167,13 @@ final class AppSessionTests: VaultTestCase {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
         let model = LockerModel(base: location("barre"))
-        let host = UIHostingController(rootView: LibraryScreen(model: model))
+        model.library = VaultLibrary(documents: [
+            ListedDocument(lineage: UUID(), created: nil, id: UUID(),
+                           labels: Labels(name: "Contrat habitation.pdf", category: "Assurance"), size: 482_000),
+            ListedDocument(lineage: UUID(), created: nil, id: UUID(),
+                           labels: Labels(name: "Inventaire.xlsx", category: "Maison"), size: 24_000)
+        ], folders: ["Administration", "Maison"])
+        let host = UIHostingController(rootView: LibraryScreen(model: model).tint(Color.lockerTint))
         host.modalPresentationStyle = .fullScreen
         presenter.present(host, animated: false)
         defer { host.dismiss(animated: false) }
@@ -183,10 +189,104 @@ final class AppSessionTests: VaultTestCase {
                 let frame = folder.convert(folder.bounds, to: host.view)
                 XCTAssertTrue(host.view.bounds.intersects(frame))
                 XCTAssertFalse(frame.intersects(add.convert(add.bounds, to: host.view)))
+                let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                }
+                let capture = XCTAttachment(image: image)
+                capture.name = "Bibliothèque iPhone"
+                capture.lifetime = .keepAlways
+                self.add(capture)
                 return
             }
         }
         XCTFail("Les deux commandes doivent être accessibles sans ouvrir de menu.")
+    }
+
+    @MainActor func testThumbnailGridAllowsMarkingTwoDocuments() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("grille"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        for name in ["Premier.txt", "Second.txt"] { _ = try await store.importData(Data([1]), name: name) }
+        model.store = store
+        model.library = try await store.library()
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(true, forKey: "libraryShowsThumbnails")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let host = UIHostingController(rootView: LibraryScreen(model: model).defaultAppStorage(defaults))
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+
+        func button(_ label: String) async throws -> NSObject {
+            for _ in 0..<20 {
+                try await Task.sleep(for: .milliseconds(50))
+                var visited = Set<ObjectIdentifier>()
+                func find(_ node: NSObject) -> NSObject? {
+                    guard visited.insert(ObjectIdentifier(node)).inserted else { return nil }
+                    if node.accessibilityLabel?.contains(label) == true && node.accessibilityTraits.contains(.button) {
+                        return node
+                    }
+                    let count = node.accessibilityElementCount()
+                    var children = (node.accessibilityElements ?? []).compactMap { $0 as? NSObject }
+                    if count > 0 && count != NSNotFound {
+                        children += (0..<count).compactMap { node.accessibilityElement(at: $0) as? NSObject }
+                    }
+                    children += (node as? UIView)?.subviews ?? []
+                    for child in children { if let match = find(child) { return match } }
+                    return nil
+                }
+                if let match = find(host.view) { return match }
+            }
+            throw TransportError(message: "Bouton absent : " + label)
+        }
+
+        for label in ["Sélectionner", "Premier.txt", "Second.txt"] {
+            let control = try await button(label)
+            XCTAssertTrue(control.accessibilityActivate(), label)
+        }
+        _ = try await button("Déplacer (2)")
+    }
+
+    @MainActor func testImportScreenOffersDecompressionBeforeChoosingAFile() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("import"))
+        let host = UIHostingController(rootView: DocumentImportScreen(model: model, folder: ""))
+        await withCheckedContinuation { done in
+            presenter.present(host, animated: false) { done.resume() }
+        }
+        var buttons = Set<String>()
+        var labels = Set<String>()
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(50))
+            var visited = Set<ObjectIdentifier>()
+            func inspect(_ node: NSObject) {
+                guard visited.insert(ObjectIdentifier(node)).inserted else { return }
+                if let label = node.accessibilityLabel {
+                    labels.insert(label)
+                    if node.accessibilityTraits.contains(.button) { buttons.insert(label) }
+                }
+                if let view = node as? UIView { view.subviews.forEach(inspect) }
+                for child in node.accessibilityElements ?? [] {
+                    if let object = child as? NSObject { inspect(object) }
+                }
+                let count = node.accessibilityElementCount()
+                if count > 0 && count != NSNotFound {
+                    for index in 0..<count {
+                        if let child = node.accessibilityElement(at: index) as? NSObject { inspect(child) }
+                    }
+                }
+            }
+            inspect(host.view)
+            if buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]) { break }
+        }
+        XCTAssertTrue(buttons.isSuperset(of: ["Décompresser une archive…", "Choisir des fichiers…"]),
+                      "Éléments affichés : \(labels.sorted())")
+        await withCheckedContinuation { done in
+            host.dismiss(animated: false) { done.resume() }
+        }
     }
 
     @MainActor func testArchiveDestinationSwitchUnlocksOrCreatesBeforeExtraction() async throws {
@@ -197,7 +297,8 @@ final class AppSessionTests: VaultTestCase {
         let originalRoot = base.appendingPathComponent(originalID)
         let otherRoot = base.appendingPathComponent(otherID)
         let original = try VaultStore(root: originalRoot, keys: keys, create: true)
-        _ = try VaultStore(root: otherRoot, keys: keys, create: true)
+        let other = try VaultStore(root: otherRoot, keys: keys, create: true)
+        _ = try await other.createFolder("Archives")
         var deny = true
         var newProtection: Bool?
         VaultAuthenticationMethod.biometrics.remember(for: otherID)
@@ -217,28 +318,45 @@ final class AppSessionTests: VaultTestCase {
         let zip = location("exemple.zip")
         try XCTUnwrap(Data(base64Encoded: ArchiveTests.zip)).write(to: zip)
         let files = SelectedImport([zip])
-        func settle() async throws {
+        func settle(_ ready: () -> Bool) async throws {
             for _ in 0..<200 {
-                if !model.opening && !model.extracting && (model.problem != nil || !model.documents.isEmpty) { return }
+                if !model.opening && !model.extracting && ready() { return }
                 try await Task.sleep(for: .milliseconds(10))
             }
             XCTFail("Import inachevé")
         }
         try await model.adoptRotated(original, slotID: originalID, code: "fictif")
-        model.extract(files, to: .existing(otherID), folder: "Source")
-        try await settle()
+        model.chooseArchiveFolder(files, in: otherID)
+        try await settle { model.problem != nil }
         XCTAssertNil(model.store)
-        let untouched = try await VaultStore(root: otherRoot, keys: keys).list()
+        XCTAssertNil(model.pendingArchivePlacement)
+        let untouched = try await other.list()
         XCTAssertTrue(untouched.isEmpty)
         deny = false
         model.lock()
         try await model.adoptRotated(VaultStore(root: originalRoot, keys: keys), slotID: originalID, code: "fictif")
-        model.extract(files, to: .existing(otherID), folder: "Source")
-        try await settle()
+        model.chooseArchiveFolder(files, in: otherID)
+        try await settle { model.pendingArchivePlacement != nil }
         XCTAssertEqual(model.slot, otherID)
+        XCTAssertTrue(model.documents.isEmpty)
+        XCTAssertEqual(model.library.folders, ["Archives"])
+        let pending = try XCTUnwrap(model.pendingArchivePlacement)
+        model.pendingArchivePlacement = nil
+        model.importArchive(pending, inNewVault: false, folder: "Archives", extract: true)
+        try await settle { model.documents.count == 2 }
+        XCTAssertEqual(model.library.documents(in: "Archives").map(\.labels.name), ["note.txt"])
+        XCTAssertTrue(model.library.documents(in: "").isEmpty)
+        model.importArchive(files, inNewVault: false, folder: "", extract: true)
+        try await settle { model.documents.count == 4 }
         XCTAssertEqual(model.library.documents(in: "").map(\.labels.name), ["note.txt"])
-        model.extract(files, to: .new, folder: "Source", protectNewKey: false)
-        try await settle()
+        model.importArchive(files, inNewVault: false, folder: "Archives", extract: false)
+        try await settle { model.documents.count == 5 }
+        let archived = try XCTUnwrap(model.library.documents(in: "Archives").first { $0.labels.name == "exemple.zip" })
+        let destinationStore = try XCTUnwrap(model.store)
+        let storedBytes = try await destinationStore.preview(archived.id)
+        XCTAssertEqual(storedBytes, try Data(contentsOf: zip))
+        model.importArchive(files, inNewVault: true, folder: "Archives", extract: true, protectNewKey: false)
+        try await settle { model.slot != otherID && model.documents.count == 2 }
         XCTAssertEqual(newProtection, false)
         XCTAssertEqual(requestedMethods, [.biometrics, .biometrics, .passcode])
         XCTAssertEqual(VaultAuthenticationMethod.preferred(for: otherID), .biometrics)

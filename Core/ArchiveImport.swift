@@ -1,19 +1,24 @@
 import CLockerArchive
 import Foundation
 
-enum ArchiveKind {
+enum ArchiveKind: CaseIterable {
     case zip, tar, sevenZip, rar, gzip, bzip2, xz
 
     init?(_ url: URL) {
-        switch url.pathExtension.lowercased() {
-        case "zip": self = .zip
-        case "tar", "tgz", "tbz", "tbz2", "txz": self = .tar
-        case "7z": self = .sevenZip
-        case "rar": self = .rar
-        case "gz", "gzip": self = .gzip
-        case "bz2": self = .bzip2
-        case "xz": self = .xz
-        default: return nil
+        let ext = url.pathExtension.lowercased()
+        guard let kind = Self.allCases.first(where: { $0.extensions.contains(ext) }) else { return nil }
+        self = kind
+    }
+
+    var extensions: [String] {
+        switch self {
+        case .zip: return ["zip"]
+        case .tar: return ["tar", "tgz", "tbz", "tbz2", "txz"]
+        case .sevenZip: return ["7z"]
+        case .rar: return ["rar"]
+        case .gzip: return ["gz", "gzip"]
+        case .bzip2: return ["bz2"]
+        case .xz: return ["xz"]
         }
     }
 

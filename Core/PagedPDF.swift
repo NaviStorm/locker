@@ -1,6 +1,7 @@
 import CoreGraphics
 import CryptoKit
 import Foundation
+import ImageIO
 
 /// Core Graphics requests plaintext ranges from authenticated blocks. No plaintext backing file exists.
 private final class EncryptedRanges {
@@ -29,6 +30,7 @@ private final class EncryptedRanges {
         var plain: Int64 = 0
         var sealed: UInt64 = 4
         try BlockCipher.decrypt(id: id, info: info, from: url, gate: gate) { bytes in
+            try Task.checkCancellation()
             frames.append(Frame(plain: plain, sealed: sealed, size: bytes.count))
             plain += Int64(bytes.count)
             sealed += UInt64(bytes.count + BlockCipher.overhead + 4)
@@ -131,6 +133,24 @@ actor PagedPDF {
 }
 
 extension VaultStore {
+    func photoThumbnail(_ id: UUID) throws -> CGImage {
+        try gate.check()
+        try Task.checkCancellation()
+        guard let info = entries[id]?.document else { throw VaultError.unavailable }
+        let ranges = try EncryptedRanges(id: id, info: info, file: blob(id), gate: gate)
+        guard let source = CGImageSourceCreateWithDataProvider(try ranges.provider(), nil) else { throw VaultError.damaged }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 384
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              !ranges.failed else { throw VaultError.damaged }
+        try gate.check()
+        return image
+    }
+
     func pagedPDF(_ id: UUID) throws -> PagedPDF {
         try gate.check()
         guard let info = entries[id]?.document else { throw VaultError.unavailable }

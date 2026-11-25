@@ -145,7 +145,7 @@ struct FamilyScreen: View {
                 if !problem.isEmpty && (!members.isEmpty || savedDraft == nil) { Text(problem).foregroundStyle(.red) }
                 if working { ProgressView() }
             }
-            .formStyle(.grouped).navigationTitle("Partage familial")
+            .vaultFormStyle().navigationTitle("Partage familial")
             .modifier(VaultDismissToolbar())
             .disabled(working)
             .confirmationDialog("Retirer l’autorisation de cet appareil ?", isPresented: Binding(get: { revoke != nil },

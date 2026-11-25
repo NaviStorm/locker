@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 import LocalAuthentication
 import XCTest
 #if SWIFT_PACKAGE
@@ -18,6 +20,48 @@ class VaultTestCase: XCTestCase {
 }
 
 final class StoreTests: VaultTestCase {
+    func testThumbnailFromEncryptedPhotoIsDownsampledAndRequiresOpenVault() async throws {
+        let store = try VaultStore(root: location("vignettes"), keys: VaultKeys(), create: true)
+        let context = try XCTUnwrap(CGContext(data: nil, width: 960, height: 480, bitsPerComponent: 8,
+            bytesPerRow: 960 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 960, height: 480))
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let id = try await store.importData(data as Data, name: "Photo.png")
+        let thumbnail = try await store.photoThumbnail(id)
+        XCTAssertEqual(thumbnail.width, 384)
+        XCTAssertEqual(thumbnail.height, 192)
+        store.gate.revoke()
+        do { _ = try await store.photoThumbnail(id); XCTFail("Aperçu après verrouillage") }
+        catch VaultError.locked {}
+    }
+
+    func testMultipleDocumentMoveIsAtomicAndPersists() async throws {
+        let root = location("deplacements")
+        let keys = VaultKeys()
+        let store = try VaultStore(root: root, keys: keys, create: true)
+        let parent = try await store.createFolder("Archives")
+        let folder = try await store.createFolder("2026", in: parent)
+        let a = try await store.importData(Data([1]), name: "A.txt")
+        let b = try await store.importData(Data([2]), name: "B.txt")
+        let other = try await store.importData(Data([3]), name: "C.txt")
+        do { try await store.moveDocuments([a, b, UUID()], to: folder); XCTFail("Document manquant") }
+        catch VaultError.unavailable {}
+        let afterFailure = try await store.library()
+        XCTAssertEqual(Set(afterFailure.documents(in: "").map(\.id)), [a, b, other])
+        try await store.moveDocuments([a, b], to: folder)
+        let reopened = try VaultStore(root: root, keys: keys)
+        let library = try await reopened.library()
+        XCTAssertEqual(Set(library.documents(in: folder).map(\.id)), [a, b])
+        XCTAssertEqual(library.documents(in: "").map(\.id), [other])
+        try await reopened.moveDocuments([a, b], to: "")
+        let restored = try await reopened.library()
+        XCTAssertTrue(restored.documents(in: folder).isEmpty)
+    }
+
     func testImportExportDeletionAndNoPlaintext() async throws {
         let root = location("vault")
         let keys = VaultKeys()

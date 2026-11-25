@@ -118,7 +118,7 @@ struct SettingsScreen: View {
                     }
                     if !errorText.isEmpty { Text(errorText).foregroundStyle(.red) }
                 }
-            }.formStyle(.grouped).navigationTitle("Réglages du coffre")
+            }.vaultFormStyle().navigationTitle("Réglages du coffre")
             .modifier(VaultDismissToolbar())
             .confirmationDialog("Créer un nouveau coffre avec de nouvelles clés et conserver l’ancien hors ligne ?", isPresented: $rotate) {
                 Button("Rechiffrer les documents") {

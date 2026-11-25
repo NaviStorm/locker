@@ -9,8 +9,18 @@ struct LibraryScreen: View {
     @State private var folderName = ""
     @State private var category = ""
     @State private var selection: UUID?
+    @AppStorage("libraryShowsThumbnails") private var showsThumbnails = false
+    @State private var selectingDocuments = false
+    @State private var marked = Set<UUID>()
+    @State private var moving = false
+    #if os(macOS)
+    @State private var showSidebar = true
+    #endif
     @State private var settings = false
     @State private var importer = false
+    @State private var versionImporter = false
+    @State private var renamingFolder: String?
+    @State private var deletingFolder: String?
     @State private var archiveSelection: SelectedImport?
     @State private var scanner = false
     @State private var versionParent: UUID?
@@ -29,93 +39,300 @@ struct LibraryScreen: View {
                     .contains { $0.localizedStandardContains(query) })
         }
     }
+    private var subfolders: [String] { model.library.subfolders(in: folder) }
     private var showsFolders: Bool {
-        folder.isEmpty && query.isEmpty && category.isEmpty && !model.library.folders.isEmpty
+        query.isEmpty && category.isEmpty && !subfolders.isEmpty
     }
 
-    private var browser: some View {
-        NavigationSplitView {
-            List(selection: $selection) {
-                if showsFolders {
-                    Section("Dossiers") {
-                        ForEach(model.library.folders, id: \.self) { name in
-                            Button { folder = name } label: { Label(name, systemImage: "folder") }
+    private func listContents(compact: Bool) -> some View {
+        List(selection: compact || selectingDocuments ? nil : $selection) {
+            if showsFolders {
+                Section("Dossiers") {
+                    ForEach(subfolders, id: \.self) { name in
+                        HStack(spacing: 8) {
+                            Button { folder = name } label: {
+                                HStack(spacing: 12) {
+                                    VaultGlyph(symbol: "folder.fill")
+                                    Text(name.components(separatedBy: "/").last ?? name).font(.body.weight(.medium))
+                                    Spacer(minLength: 4)
+                                }.contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            Menu { folderActions(name) } label: {
+                                Label("Actions du dossier « \(name) »", systemImage: "ellipsis.circle")
+                                    .labelStyle(.iconOnly)
+                            }.menuIndicator(.hidden).fixedSize()
+                        }.padding(.vertical, 2)
+                        .contextMenu { folderActions(name) }
+                    }
+                }
+            }
+            if !filtered.isEmpty {
+                Section("Documents") {
+                    ForEach(filtered) { item in
+                        if selectingDocuments {
+                            markButton(item) { documentRow(item) }
+                        } else {
+                            documentLink(item, compact: compact)
+                                .contextMenu { documentActions(for: item) }
                         }
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Color.lockerCanvas)
+        #if os(iOS)
+        .listStyle(.insetGrouped)
+        #else
+        .listStyle(.inset)
+        #endif
+    }
+
+    private func documentList(compact: Bool = false) -> some View {
+        Group {
+            if showsThumbnails { gridContents }
+            else { listContents(compact: compact) }
+        }
+        .overlay {
+            if filtered.isEmpty && !showsFolders {
+                let searching = !query.isEmpty || !category.isEmpty
+                ContentUnavailableView {
+                    Label(searching ? "Aucun résultat" : "Aucun document",
+                          systemImage: searching ? "magnifyingglass" : "tray")
+                } actions: {
+                    if searching {
+                        Button("Effacer les filtres") { query = ""; category = "" }
+                    } else {
+                        importButton
+                    }
+                }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { collectionControls }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selectingDocuments {
+                Menu {
+                    Button("Racine du coffre") { moveMarked(to: "") }.disabled(folder.isEmpty)
+                    ForEach(model.library.folders, id: \.self) { target in
+                        Button(target) { moveMarked(to: target) }.disabled(target == folder)
+                    }
+                } label: {
+                    Label("Déplacer (\(marked.count))", systemImage: "folder")
+                }
+                .disabled(marked.isEmpty || moving)
+                .padding(8).frame(maxWidth: .infinity).background(.bar)
+            }
+        }
+        .onChange(of: filtered.map(\.id)) { _, ids in marked.formIntersection(ids) }
+        .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
+        .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
+        .onChange(of: folder) { category = ""; query = ""; marked.removeAll(); selectingDocuments = false }
+        .onChange(of: selectedDocument?.id) { _, id in
+            if id == nil { selection = nil }
+        }
+        #if os(iOS)
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                if !folder.isEmpty { parentButton }
+                folderButton
+            }
+            ToolbarItemGroup {
+                Menu {
+                    importButton
+                    if ScanScreen.supported {
+                        Button("Numériser", systemImage: "document.viewfinder") { scanner = true }
+                    }
+                } label: { Label("Ajouter", systemImage: "plus") }
+                Menu {
+                    folderPicker
+                    categoryPicker
+                } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
+                Menu {
+                    settingsButton
+                    lockButton
+                } label: { Label("Coffre", systemImage: "lock.shield") }
+            }
+        }
+        #endif
+    }
+
+    private var collectionControls: some View {
+        HStack {
+            Picker("Affichage", selection: $showsThumbnails) {
+                Label("Liste", systemImage: "list.bullet").tag(false)
+                Label("Vignettes", systemImage: "square.grid.2x2").tag(true)
+            }
+            .pickerStyle(.segmented).labelStyle(.iconOnly).labelsHidden()
+            .frame(width: 92)
+            Spacer()
+            Button(selectingDocuments ? "Annuler" : "Sélectionner") {
+                selection = nil
+                marked.removeAll()
+                selectingDocuments.toggle()
+            }.disabled(moving || (!selectingDocuments && filtered.isEmpty))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6).background(.bar)
+    }
+
+    private var gridContents: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 115, maximum: 180), spacing: 14)],
+                      alignment: .leading, spacing: 16) {
+                if showsFolders {
+                    ForEach(subfolders, id: \.self) { name in
+                        Button { folder = name } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Image(systemName: "folder.fill").font(.largeTitle).foregroundStyle(Color.lockerTint)
+                                    .frame(maxWidth: .infinity).frame(height: 90)
+                                    .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                                Text(name.components(separatedBy: "/").last ?? name)
+                                    .font(.callout.weight(.medium)).lineLimit(2)
+                            }
+                        }.contextMenu { folderActions(name) }
                     }
                 }
                 ForEach(filtered) { item in
-                    NavigationLink(value: item.id) {
-                        Label {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.labels.name).lineLimit(2)
-                                Text([item.labels.folder, item.labels.category,
-                                      ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)]
-                                    .filter { !$0.isEmpty }.joined(separator: " · "))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        } icon: { Image(systemName: "doc.text").foregroundStyle(.tint) }
+                    let tile = DocumentTile(item: item, store: model.store)
+                    if selectingDocuments {
+                        markButton(item) { tile }
+                    } else {
+                        NavigationLink(value: item.id) { tile }
+                            .contextMenu { documentActions(for: item) }
                     }
-                    .contextMenu { documentActions(for: item) }
                 }
-            }
-            .overlay {
-                if filtered.isEmpty && !showsFolders {
-                    ContentUnavailableView(query.isEmpty ? "Aucun document" : "Aucun résultat",
-                                           systemImage: query.isEmpty ? "folder" : "magnifyingglass")
-                }
-            }
-            .searchable(text: $query, prompt: folder.isEmpty ? "Rechercher à la racine" : "Rechercher dans ce dossier")
-            .navigationTitle(folder.isEmpty ? model.vaultTitle : folder)
-            .onChange(of: folder) { category = ""; query = "" }
-            .onChange(of: selectedDocument?.id) { _, id in
-                if id == nil { selection = nil }
-            }
-            #if os(iOS)
-            .toolbar {
-                ToolbarItem(placement: folder.isEmpty ? .navigation : .automatic) { folderButton }
-                ToolbarItemGroup {
-                    Menu {
-                        importButton
-                        if ScanScreen.supported {
-                            Button("Numériser", systemImage: "document.viewfinder") { scanner = true }
-                        }
-                    } label: { Label("Ajouter", systemImage: "plus") }
-                    Menu {
-                        folderPicker
-                        categoryPicker
-                    } label: { Label("Filtrer", systemImage: "line.3.horizontal.decrease") }
-                    Menu {
-                        settingsButton
-                        lockButton
-                    } label: { Label("Coffre", systemImage: "lock.shield") }
-                }
-            }
-            #endif
-        } detail: {
-            if let item = selectedDocument {
-                DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
-                    versionParent = item.id
-                    importer = true
-                }, actions: documentActions(for: item)).id(item.id)
+            }.buttonStyle(.plain).padding(14)
+        }.background(Color.lockerCanvas)
+    }
+
+    private func markButton<Content: View>(_ item: ListedDocument, @ViewBuilder content: () -> Content) -> some View {
+        Button {
+            if !marked.insert(item.id).inserted { marked.remove(item.id) }
+        } label: {
+            if showsThumbnails {
+                content().overlay(alignment: .topTrailing) { selectionMark(item).padding(5) }
             } else {
-                ContentUnavailableView("Sélectionnez un document", systemImage: "doc.text.magnifyingglass")
+                HStack { selectionMark(item); content(); Spacer(minLength: 0) }.contentShape(Rectangle())
             }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(marked.contains(item.id) ? .isSelected : [])
+        .disabled(moving)
+    }
+
+    private func selectionMark(_ item: ListedDocument) -> some View {
+        Image(systemName: marked.contains(item.id) ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(Color.lockerTint).background(.background, in: Circle())
+            .accessibilityHidden(true)
+    }
+
+    private func moveMarked(to destination: String) {
+        guard !moving, !marked.isEmpty, model.store != nil else { return }
+        let ids = marked
+        moving = true
+        model.perform { store in
+            defer { moving = false }
+            try await store.moveDocuments(ids, to: destination)
+            marked.removeAll()
+            selectingDocuments = false
+        }
+    }
+
+    private var stackedBrowser: some View {
+        NavigationStack(path: Binding(get: { selection.map { [$0] } ?? [] },
+                                      set: { selection = $0.last })) {
+            documentList(compact: true)
+                .navigationDestination(for: UUID.self) { id in
+                    if let item = model.documents.first(where: { $0.id == id }) {
+                        documentView(item)
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder private func documentLink(_ item: ListedDocument, compact: Bool) -> some View {
+        #if os(macOS)
+        if compact {
+            NavigationLink(value: item.id) { documentRow(item) }
+        } else {
+            documentRow(item).frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle()).tag(item.id)
+        }
+        #else
+        NavigationLink(value: item.id) { documentRow(item) }
+        #endif
+    }
+
+    private func documentRow(_ item: ListedDocument) -> some View {
+        HStack(spacing: 12) {
+            DocumentGlyph(name: item.labels.name)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.labels.name).font(.body.weight(.medium)).lineLimit(2)
+                Text([item.labels.category, item.size.formatted(.byteCount(style: .file))]
+                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(.vertical, 3)
+    }
+
+    private func documentView(_ item: ListedDocument) -> some View {
+        DocumentScreen(model: model, item: item, select: selectVersion, addVersion: {
+            versionParent = item.id
+            versionImporter = true
+        }, actions: documentActions(for: item)).id(item.id)
+    }
+
+    private var browser: some View {
+        #if os(macOS)
+        HSplitView {
+            if showSidebar {
+                documentList()
+                    .frame(minWidth: 210, idealWidth: 270, maxWidth: 360)
+            }
+            detail.frame(minWidth: 250, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button(showSidebar ? "Masquer la barre latérale" : "Afficher la barre latérale",
+                       systemImage: "sidebar.leading") { showSidebar.toggle() }
+            }
+        }
+        #else
+        NavigationSplitView { documentList() } detail: { detail }
+        #endif
+    }
+
+    @ViewBuilder private var detail: some View {
+        if let item = selectedDocument {
+            documentView(item)
+        } else {
+            VaultOverview(title: folder.isEmpty ? model.vaultTitle : folder,
+                          provider: model.configuration.provider.rawValue,
+                          documents: filtered,
+                          folderCount: folder.isEmpty ? subfolders.count : nil,
+                          open: selectVersion)
         }
     }
 
     var body: some View {
         browserWithCommands
-        .fileImporter(isPresented: $importer, allowedContentTypes: [.item], allowsMultipleSelection: versionParent == nil) { result in
+        .sheet(isPresented: $importer) {
+            DocumentImportScreen(model: model, folder: folder)
+        }
+        .fileImporter(isPresented: $versionImporter, allowedContentTypes: [.item]) { result in
+            defer { versionParent = nil }
             switch result {
-            case let .success(urls):
-                let files = SelectedImport(urls)
-                if versionParent == nil && files.containsArchive {
-                    archiveSelection = files
-                } else {
-                    model.importOriginals(files, parent: versionParent, folder: folder)
-                }
+            case let .success(url):
+                guard let versionParent else { return }
+                model.importOriginals(SelectedImport([url]), parent: versionParent, folder: folder)
             case let .failure(error):
                 if (error as NSError).code != NSUserCancelledError { model.problem = error.localizedDescription }
+            }
+        }
+        .onChange(of: model.pendingArchivePlacement?.id, initial: true) { _, _ in
+            if let files = model.pendingArchivePlacement {
+                folder = ""
+                archiveSelection = files
+                model.pendingArchivePlacement = nil
             }
         }
         .sheet(item: $archiveSelection) { files in
@@ -130,14 +347,38 @@ struct LibraryScreen: View {
             TextField("Nom du dossier", text: $folderName)
             Button("Créer") {
                 let name = folderName
+                let parent = folder
                 model.perform { store in
-                    folder = try await store.createFolder(name)
+                    folder = try await store.createFolder(name, in: parent)
                     category = ""
                     query = ""
                 }
             }.disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Annuler", role: .cancel) {}
         }
+        .alert("Renommer le dossier", isPresented: Binding(get: { renamingFolder != nil },
+            set: { if !$0 { renamingFolder = nil } }), presenting: renamingFolder) { source in
+            TextField("Nom du dossier", text: $folderName)
+            Button("Renommer") {
+                let name = folderName
+                model.perform { store in
+                    let target = try await store.renameFolder(source, to: name)
+                    if folder == source { folder = target }
+                }
+            }.disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Annuler", role: .cancel) {}
+        }
+        .confirmationDialog("Supprimer le dossier « \(deletingFolder ?? "") » ?", isPresented: Binding(
+            get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }),
+            titleVisibility: .visible, presenting: deletingFolder) { name in
+            Button("Supprimer le dossier et son contenu", role: .destructive) {
+                model.perform { store in
+                    try await store.deleteFolder(name)
+                    if folder == name || folder.hasPrefix(name + "/") { folder = VaultLibrary.parent(of: name); selection = nil }
+                }
+            }
+            Button("Annuler", role: .cancel) {}
+        } message: { _ in Text("Les documents, leurs versions et les sous-dossiers de cet emplacement seront supprimés.") }
         .lockerPanel(isPresented: $settings) { SettingsScreen(model: model) }
         .sheet(isPresented: $scanner) {
             ScanScreen { result in
@@ -186,6 +427,7 @@ struct LibraryScreen: View {
         #if os(macOS)
         VStack(spacing: 0) {
             HStack(spacing: 12) {
+                if !folder.isEmpty { parentButton }
                 folderButton
                 importButton
                 Button("Photographier un document", systemImage: "camera") { scanner = true }
@@ -206,33 +448,47 @@ struct LibraryScreen: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.bordered)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
             .background(.bar)
             Divider()
-            browser
+            GeometryReader { geometry in
+                if showsThumbnails || geometry.size.width < 680 { stackedBrowser }
+                else { browser }
+            }
         }
         #else
-        browser
+        if showsThumbnails { stackedBrowser } else { browser }
         #endif
     }
 
-    @ViewBuilder private var folderButton: some View {
-        if folder.isEmpty {
-            Button("Nouveau dossier", systemImage: "folder.badge.plus") {
-                folderName = ""
-                creatingFolder = true
-            }
-            .labelStyle(.iconOnly)
-            .help("Nouveau dossier")
-        } else {
-            Button("Retour au coffre", systemImage: "chevron.backward") { folder = "" }
-                .help("Retour au coffre")
+    private var folderButton: some View {
+        Button("Nouveau dossier", systemImage: "folder.badge.plus") {
+            folderName = ""
+            creatingFolder = true
         }
+        .labelStyle(.iconOnly)
+        .help("Nouveau dossier")
+    }
+
+    private var parentButton: some View {
+        Button("Remonter d’un dossier", systemImage: "chevron.backward") {
+            folder = VaultLibrary.parent(of: folder)
+        }
+        .labelStyle(.iconOnly)
+        .help("Remonter d’un dossier")
+    }
+
+    @ViewBuilder private func folderActions(_ name: String) -> some View {
+        Button("Renommer le dossier…", systemImage: "pencil") {
+            folderName = name.components(separatedBy: "/").last ?? name
+            renamingFolder = name
+        }
+        Button("Supprimer le dossier…", systemImage: "trash", role: .destructive) { deletingFolder = name }
     }
 
     private var importButton: some View {
-        Button("Importer un fichier", systemImage: "doc.badge.plus") { versionParent = nil; importer = true }
+        Button("Importer un fichier", systemImage: "doc.badge.plus") { importer = true }
             .help("Importer un fichier")
             .disabled(model.extracting)
     }

@@ -61,6 +61,14 @@ struct VaultLibrary {
     var documents: [ListedDocument] = []
     var folders: [String] = []
 
+    static func parent(of path: String) -> String {
+        path.lastIndex(of: "/").map { String(path[..<$0]) } ?? ""
+    }
+
+    func subfolders(in parent: String) -> [String] {
+        folders.filter { Self.parent(of: $0) == parent }
+    }
+
     func documents(in folder: String) -> [ListedDocument] {
         documents.filter { $0.labels.folder == folder }
     }
@@ -71,6 +79,7 @@ struct Catalog: Codable {
     var pending: [UUID: UUID]
     var family: FamilyLocal?
     var joinDraft: FamilyJoinDraft?
+    var importedShares: Set<UUID>?
 }
 
 actor VaultStore {
@@ -80,6 +89,7 @@ actor VaultStore {
     private(set) var entries: [UUID: Entry]
     private(set) var pending: [UUID: UUID]
     private(set) var family: FamilyLocal?
+    private(set) var importedShares: Set<UUID>?
     private var joinDraft: FamilyJoinDraft?
 
     init(root: URL, keys: VaultKeys, create: Bool = false, gate: SessionGate = SessionGate()) throws {
@@ -102,6 +112,7 @@ actor VaultStore {
         pending = state.pending
         family = state.family
         joinDraft = state.joinDraft
+        importedShares = state.importedShares
         // A crash can leave encrypted content without a committed catalogue reference.
         for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             where file.pathExtension == "blob" {
@@ -140,10 +151,12 @@ actor VaultStore {
         try commit(entries, queue)
     }
 
-    func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID], family newFamily: FamilyLocal? = nil) throws {
+    func commit(_ updated: [UUID: Entry], _ queue: [UUID: UUID], family newFamily: FamilyLocal? = nil,
+                importedShare: UUID? = nil) throws {
         let nextFamily = newFamily ?? family
         try writeCatalog(Catalog(entries: updated, pending: queue, family: nextFamily,
-                                 joinDraft: nextFamily == nil ? joinDraft : nil))
+                                 joinDraft: nextFamily == nil ? joinDraft : nil,
+                                 importedShares: importedShare.map { (importedShares ?? []).union([$0]) } ?? importedShares))
     }
 
     func familyJoinDraft() throws -> FamilyJoinDraft {
@@ -155,7 +168,7 @@ actor VaultStore {
         try gate.check()
         guard family == nil else { throw FamilyError.nonempty }
         try writeCatalog(Catalog(entries: entries, pending: pending, family: nil,
-                                 joinDraft: draft == FamilyJoinDraft() ? nil : draft))
+                                 joinDraft: draft == FamilyJoinDraft() ? nil : draft, importedShares: importedShares))
     }
 
     private func writeCatalog(_ catalog: Catalog) throws {
@@ -166,6 +179,7 @@ actor VaultStore {
             entries = catalog.entries
             pending = catalog.pending
             joinDraft = catalog.joinDraft
+            importedShares = catalog.importedShares
         }
     }
 
@@ -198,18 +212,86 @@ actor VaultStore {
                                                 labels: document.labels, size: document.size))
             }
         }
+        // An imported archive or a shared document can contain a path without parent markers.
+        for path in folders {
+            var parent = VaultLibrary.parent(of: path)
+            while !parent.isEmpty && folders.insert(parent).inserted {
+                parent = VaultLibrary.parent(of: parent)
+            }
+        }
         return VaultLibrary(documents: documents.sorted { $0.labels.name.localizedStandardCompare($1.labels.name) == .orderedAscending },
                             folders: folders.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
     }
 
-    func createFolder(_ proposed: String) throws -> String {
+    func createFolder(_ proposed: String, in parent: String = "") throws -> String {
         let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { throw TransportError(message: "Saisissez un nom de dossier.") }
-        guard try !library().folders.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            throw TransportError(message: "Saisissez un nom de dossier valide.")
+        }
+        let folders = try library().folders
+        guard parent.isEmpty || folders.contains(parent) else {
+            throw TransportError(message: "Le dossier parent n’existe plus dans le coffre.")
+        }
+        let path = parent.isEmpty ? name : parent + "/" + name
+        guard !folders.contains(where: { $0.caseInsensitiveCompare(path) == .orderedSame }) else {
             throw TransportError(message: "Un dossier porte déjà ce nom.")
         }
-        _ = try add(name: name, isFolder: true) { Data() }
-        return name
+        _ = try add(name: path, isFolder: true) { Data() }
+        return path
+    }
+
+    func renameFolder(_ folder: String, to proposed: String) throws -> String {
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            throw TransportError(message: "Saisissez un nom de dossier valide.")
+        }
+        let parent = folder.lastIndex(of: "/").map { String(folder[...$0]) } ?? ""
+        let destination = parent + name
+        try updateFolder(folder, destination: destination)
+        return destination
+    }
+
+    func deleteFolder(_ folder: String) throws {
+        try updateFolder(folder, destination: nil)
+    }
+
+    private func updateFolder(_ folder: String, destination: String?) throws {
+        let folders = try library().folders
+        guard !folder.isEmpty, folders.contains(folder) else {
+            throw TransportError(message: "Ce dossier n’existe plus dans le coffre.")
+        }
+        func isAffected(_ path: String) -> Bool { path == folder || path.hasPrefix(folder + "/") }
+        if let destination {
+            if destination == folder { return }
+            if folders.contains(where: { path in
+                !isAffected(path) && (path.caseInsensitiveCompare(destination) == .orderedSame
+                    || path.range(of: destination + "/", options: [.anchored, .caseInsensitive]) != nil)
+            }) {
+                throw TransportError(message: "Un dossier porte déjà ce nom.")
+            }
+        }
+        var updated = entries
+        var queue = pending
+        var removed = [UUID]()
+        for entry in entries.values {
+            guard let document = entry.document else { continue }
+            let marker = document.isFolder == true
+            let path = marker ? document.labels.name : document.labels.folder
+            guard isAffected(path) else { continue }
+            let labels = destination.map { target in
+                var labels = document.labels
+                let newPath = target + path.dropFirst(folder.count)
+                if marker { labels.name = newPath } else { labels.folder = newPath }
+                return labels
+            }
+            let next = try changedEntry(entry, labels: labels)
+            updated[next.id] = next
+            queue[next.id] = next.revision
+            if labels == nil { removed.append(next.id) }
+        }
+        try commit(updated, queue)
+        // A locked or interrupted cleanup can also finish when the catalogue is reopened.
+        for id in removed { try? FileManager.default.removeItem(at: blob(id)) }
     }
 
     @discardableResult
@@ -274,18 +356,40 @@ actor VaultStore {
     }
 
     func moveDocument(_ id: UUID, to folder: String) throws {
-        var labels = try labelsForDocument(id)
-        guard folder != labels.folder else { return }
+        try moveDocuments([id], to: folder)
+    }
+
+    func moveDocuments(_ ids: Set<UUID>, to folder: String) throws {
+        try gate.check()
         if !folder.isEmpty, try !library().folders.contains(folder) {
             throw TransportError(message: "Ce dossier n’existe plus dans le coffre.")
         }
-        labels.folder = folder
-        try change(id, labels: labels)
+        var updated = entries
+        var queue = pending
+        var changed = false
+        for id in ids {
+            guard let entry = entries[id], let document = entry.document, document.isFolder != true else {
+                throw VaultError.unavailable
+            }
+            guard document.labels.folder != folder else { continue }
+            var labels = document.labels
+            labels.folder = folder
+            let next = try changedEntry(entry, labels: labels)
+            updated[id] = next
+            queue[id] = next.revision
+            changed = true
+        }
+        if changed { try commit(updated, queue) }
     }
 
     func change(_ id: UUID, labels: Labels?) throws {
         try gate.check()
-        guard var entry = entries[id], entry.document != nil else { throw VaultError.unavailable }
+        guard let entry = entries[id], entry.document != nil else { throw VaultError.unavailable }
+        try replace(changedEntry(entry, labels: labels))
+    }
+
+    private func changedEntry(_ original: Entry, labels: Labels?) throws -> Entry {
+        var entry = original
         try authorizeLocal(labels == nil ? .delete : .edit, scope: entry.scope)
         if let labels, var document = entry.document {
             var previous = document.previousLabels ?? [:]
@@ -302,7 +406,7 @@ actor VaultStore {
         guard entry.generation < UInt64.max else { throw VaultError.damaged }
         entry.generation += 1
         entry.revision = UUID()
-        try replace(entry)
+        return entry
     }
 
     func preview(_ id: UUID, limit: Int = 32 * 1024 * 1024) throws -> Data {
