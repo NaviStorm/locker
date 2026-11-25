@@ -8,25 +8,38 @@ struct DocumentScreen<Actions: View>: View {
     let select: (UUID) -> Void
     let addVersion: () -> Void
     let actions: Actions
-    @State private var bytes: Data?
+    @State private var printer = DocumentPrinter()
+    @State private var preparingPrint: DocumentPrintSize?
     @State private var editing = false
     @State private var editingPhoto = false
     @State private var showVersions = false
+    @State private var watermarking = false
     @State private var exporting = false
     @State private var history: [Labels] = []
     @State private var showHistory = false
 
     var body: some View {
-        StoredDocumentPreview(model: model, item: item) { bytes = $0 }
+        StoredDocumentPreview(model: model, item: item)
+        .background(DocumentPrintAnchor(printer: printer))
         .toolbar {
             ToolbarItemGroup {
                 if item.isPhoto {
                     Button("Modifier la photo", systemImage: "slider.horizontal.3") { editingPhoto = true }
                         .help("Modifier la photo")
                 }
-                if let bytes {
-                    ShareLink(item: SharedBytes(bytes: bytes, name: item.labels.name),
-                              preview: SharePreview(item.labels.name)) { Label("Partager une copie", systemImage: "square.and.arrow.up") }
+                if let store = model.store {
+                    Menu {
+                        ShareLink(item: OriginalDocumentShare(store: store, item: item),
+                                  preview: SharePreview(item.labels.name)) {
+                            Label("Partager l’original", systemImage: "square.and.arrow.up")
+                        }
+                        if item.supportsWatermark {
+                            PrintSizeMenu(title: "Imprimer l’original…") { preparingPrint = $0 }
+                                .disabled(preparingPrint != nil)
+                            Button("Partager avec un filigrane…", systemImage: "textformat") { watermarking = true }
+                        }
+                    } label: { Label("Partager", systemImage: "square.and.arrow.up") }
+                    .help("Partager ou imprimer le document")
                 }
                 Menu {
                     actions
@@ -41,6 +54,18 @@ struct DocumentScreen<Actions: View>: View {
                 } label: { Label("Actions", systemImage: "ellipsis.circle") }
             }
         }
+        .task(id: preparingPrint) {
+            guard let size = preparingPrint, let store = model.store else { return }
+            defer { preparingPrint = nil }
+            await printer.presentOriginal(item, from: store, size: size) { error in
+                if model.store === store { model.problem = error.localizedDescription }
+            }
+        }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $watermarking) { watermarkScreen }
+        #else
+        .sheet(isPresented: $watermarking) { watermarkScreen }
+        #endif
         .lockerPanel(isPresented: $showVersions) {
             VersionHistoryScreen(model: model, lineage: item.lineage, select: select)
         }
@@ -78,9 +103,15 @@ struct DocumentScreen<Actions: View>: View {
             }
         }
     }
+
+    @ViewBuilder private var watermarkScreen: some View {
+        if let store = model.store { WatermarkScreen(store: store, item: item) }
+    }
 }
 
 private extension ListedDocument {
+    var supportsWatermark: Bool { isPhoto || (labels.name as NSString).pathExtension.lowercased() == "pdf" }
+
     var isPhoto: Bool {
         UTType(filenameExtension: (labels.name as NSString).pathExtension)?.conforms(to: .image) == true
     }
@@ -89,40 +120,39 @@ private extension ListedDocument {
 private struct StoredDocumentPreview: View {
     let model: LockerModel
     let item: ListedDocument
-    var onLoad: ((Data) -> Void)? = nil
     @State private var bytes: Data?
     @State private var largePhoto: CGImage?
     @State private var pdf: PagedPDF?
     @State private var notice = ""
+    @State private var expanded = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            if let pdf { LargePDFScreen(pdf: pdf) }
-            else if let largePhoto {
-                ZoomablePhoto(image: Image(decorative: largePhoto, scale: 1),
-                              size: CGSize(width: largePhoto.width, height: largePhoto.height))
+        ExpandableDocumentReader(expanded: $expanded) {
+            preview.overlay(alignment: .topTrailing) {
+                if expanded {
+                    Button("Quitter le plein écran", systemImage: "arrow.down.right.and.arrow.up.left") {
+                        expanded = false
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(.cancelAction)
+                    .help("Quitter le plein écran")
+                    .padding(10)
+                }
             }
-            else if let bytes {
-                DocumentPreview(data: bytes, name: item.labels.name)
-            } else if notice.isEmpty { ProgressView() }
-            else { ContentUnavailableView("Aperçu indisponible", systemImage: "doc", description: Text(notice)) }
+            .tint(Color.lockerTint)
+            .privacySensitive()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.lockerCanvas)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 10) {
-                if !item.labels.folder.isEmpty {
-                    Label(item.labels.folder, systemImage: "folder").lineLimit(1)
+        .safeAreaInset(edge: .bottom, spacing: 0) { metadata }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Afficher en plein écran", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    model.activity()
+                    expanded = true
                 }
-                if !item.labels.category.isEmpty {
-                    Label(item.labels.category, systemImage: "tag").lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Text(item.size.formatted(.byteCount(style: .file))).monospacedDigit()
+                .help("Afficher en plein écran")
             }
-            .font(.caption).foregroundStyle(.secondary)
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(.bar)
         }
         .navigationTitle(item.labels.name)
         .task(id: item.id) {
@@ -144,9 +174,40 @@ private struct StoredDocumentPreview: View {
                 try store.gate.check()
                 try Task.checkCancellation()
                 bytes = loaded
-                onLoad?(loaded)
             } catch { notice = error.localizedDescription }
         }
+    }
+
+    private var preview: some View {
+        VStack(spacing: 12) {
+            if let pdf { LargePDFScreen(pdf: pdf) }
+            else if let largePhoto {
+                ZoomablePhoto(image: Image(decorative: largePhoto, scale: 1),
+                              size: CGSize(width: largePhoto.width, height: largePhoto.height))
+            }
+            else if let bytes {
+                DocumentPreview(data: bytes, name: item.labels.name)
+            } else if notice.isEmpty { ProgressView() }
+            else { ContentUnavailableView("Aperçu indisponible", systemImage: "doc", description: Text(notice)) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.lockerCanvas)
+    }
+
+    private var metadata: some View {
+        HStack(spacing: 10) {
+            if !item.labels.folder.isEmpty {
+                Label(item.labels.folder, systemImage: "folder").lineLimit(1)
+            }
+            if !item.labels.category.isEmpty {
+                Label(item.labels.category, systemImage: "tag").lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Text(item.size.formatted(.byteCount(style: .file))).monospacedDigit()
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(.bar)
     }
 }
 
@@ -246,14 +307,6 @@ private struct VersionHistoryScreen: View {
     }
 }
 
-private struct SharedBytes: Transferable {
-    let bytes: Data
-    let name: String
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .data) { $0.bytes }.suggestedFileName { $0.name }
-    }
-}
-
 private struct EditLabels: View {
     let model: LockerModel
     let item: ListedDocument
@@ -292,7 +345,7 @@ private struct EditLabels: View {
     }
 }
 
-private struct DocumentPreview: View {
+struct DocumentPreview: View {
     let data: Data
     let name: String
     private var type: UTType? { UTType(filenameExtension: (name as NSString).pathExtension) }

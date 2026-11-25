@@ -96,9 +96,16 @@ struct ArchiveDestinationScreen: View {
 
 extension LockerModel {
     func importOriginals(_ files: SelectedImport, parent: UUID?, folder: String) {
-        perform { store in
-            defer { withExtendedLifetime(files) {} }
-            for url in files.urls { _ = try await store.importCoordinated(url, parent: parent, folder: folder) }
+        if let parent {
+            perform { store in
+                defer { withExtendedLifetime(files) {} }
+                for url in files.urls { _ = try await store.importCoordinated(url, parent: parent, folder: folder) }
+            }
+        } else {
+            reviewImport { store, choices in
+                defer { withExtendedLifetime(files) {} }
+                return try await store.extractSelection(files.urls, folder: folder, expandArchives: false, choices: choices)
+            }
         }
     }
 
@@ -132,13 +139,9 @@ extension LockerModel {
     }
 
     private func extractHere(_ files: SelectedImport, folder: String) {
-        extracting = true
-        perform { store in
-            defer {
-                withExtendedLifetime(files) {}
-                if self.store === store { self.extracting = false }
-            }
-            try await store.extractSelection(files.urls, folder: folder)
+        reviewImport(extract: true) { store, choices in
+            defer { withExtendedLifetime(files) {} }
+            return try await store.extractSelection(files.urls, folder: folder, choices: choices)
         }
     }
 }

@@ -53,7 +53,12 @@ extension VaultStore {
     }
 
     func photoEditingPreview(_ id: UUID, maxPixelSize: Int = 1280) throws -> CGImage {
+        try photoPrintPreview(id, maxPixelSize: maxPixelSize).image
+    }
+
+    func photoPrintPreview(_ id: UUID, maxPixelSize: Int) throws -> (image: CGImage, physicalSize: CGSize?) {
         let (source, ranges, index) = try photoSource(id)
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
         let options: [CFString: Any] = [
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -62,7 +67,7 @@ extension VaultStore {
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary),
               !ranges.failed else { throw VaultError.damaged }
         try gate.check()
-        return image
+        return (image, PrintDocument.physicalPhotoSize(properties))
     }
 
     func savePhotoEdits(_ edits: [PhotoEdit], to id: UUID) throws -> UUID {

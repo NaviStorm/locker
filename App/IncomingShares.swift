@@ -21,15 +21,15 @@ enum ShareRecipient {
 }
 
 extension VaultStore {
+    @discardableResult
     func receive(_ id: UUID, from inbox: ShareInbox, privateKey: Curve25519.KeyAgreement.PrivateKey,
-                 folder: String) throws {
+                 folder: String, choices: ImportChoices = [:]) throws -> UUID? {
         try gate.check()
+        var open: UUID?
         if importedShares?.contains(id) != true {
             let (items, key) = try inbox.open(id, privateKey: privateKey)
             guard try folder.isEmpty || library().folders.contains(folder) else { throw VaultError.changed }
-            var updated = entries
-            var queue = pending
-            var staged = [UUID]()
+            var staged = [Entry]()
             do {
                 for item in items {
                     var index = 0
@@ -40,17 +40,16 @@ extension VaultStore {
                         index += 1
                         return clear
                     }
-                    staged.append(entry.id)
-                    updated[entry.id] = entry
-                    queue[entry.id] = entry.revision
+                    staged.append(entry)
                 }
-                try commit(updated, queue, importedShare: id)
+                open = try publishImports(staged, choices: choices, share: id)
             } catch {
-                for id in staged { try? FileManager.default.removeItem(at: blob(id)) }
+                for entry in staged { try? FileManager.default.removeItem(at: blob(entry.id)) }
                 throw error
             }
         }
         try FileManager.default.removeItem(at: inbox.directory(id))
+        return open
     }
 }
 
@@ -59,7 +58,6 @@ struct IncomingShares: View {
     @Environment(\.scenePhase) private var phase
     @State private var batches = [UUID]()
     @State private var folder = ""
-    @State private var importing = false
     @State private var selectedBatch: UUID?
     @State private var reviewing = false
     @State private var names = [String]()
@@ -118,7 +116,7 @@ struct IncomingShares: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Annuler") { reviewing = false } }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Importer") { importBatch() }.disabled(importing)
+                        Button("Importer") { importBatch() }.disabled(model.reviewingImport)
                     }
                 }
             }.frame(idealWidth: 450, idealHeight: 340)
@@ -126,22 +124,16 @@ struct IncomingShares: View {
     }
 
     private func importBatch() {
-        guard !importing, let id = selectedBatch, let store = model.store else { return }
-        importing = true
-        Task {
-            defer { importing = false }
-            do {
-                let inbox = try ShareInbox.local()
-                try await store.receive(id, from: inbox, privateKey: ShareRecipient.privateKey(), folder: folder)
-                let library = try await store.library()
-                guard model.store === store else { return }
-                model.library = library
-                batches = try inbox.pending()
-                reviewing = false
-            } catch {
-                reviewing = false
-                if model.store === store { model.problem = error.localizedDescription }
+        guard !model.reviewingImport, let id = selectedBatch, let store = model.store else { return }
+        do {
+            let inbox = try ShareInbox.local()
+            let key = try ShareRecipient.privateKey()
+            let destination = folder
+            reviewing = false
+            model.reviewImport { session, choices in
+                guard session === store else { throw VaultError.changed }
+                return try await session.receive(id, from: inbox, privateKey: key, folder: destination, choices: choices)
             }
-        }
+        } catch { model.problem = error.localizedDescription }
     }
 }

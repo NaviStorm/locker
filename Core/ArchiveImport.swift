@@ -57,16 +57,19 @@ enum ArchiveIssue: LocalizedError {
 
 extension VaultStore {
     /// Publish the selection in a single encrypted catalogue transaction. All file paths on disk are Locker UUIDs.
-    func extractSelection(_ urls: [URL], folder: String) throws {
+    @discardableResult
+    func extractSelection(_ urls: [URL], folder: String, expandArchives: Bool = true,
+                          choices: ImportChoices = [:]) throws -> UUID? {
         try gate.check()
         var staged = [Entry]()
         var folders = Set(try library().folders)
+        guard folder.isEmpty || folders.contains(folder) else { throw VaultError.changed }
         var remainingBytes = 1 << 30
         var remainingEntries = 10_000
         do {
             for url in urls {
                 try coordinatedRead(url) { local in
-                    if let kind = ArchiveKind(url) {
+                    if expandArchives, let kind = ArchiveKind(url) {
                         try readArchive(local, named: url.lastPathComponent, kind: kind, folder: folder,
                                         folders: &folders, staged: &staged,
                                         remainingBytes: &remainingBytes, remainingEntries: &remainingEntries)
@@ -79,10 +82,7 @@ extension VaultStore {
                     }
                 }
             }
-            var updated = entries
-            var queue = pending
-            for entry in staged { updated[entry.id] = entry; queue[entry.id] = entry.revision }
-            try commit(updated, queue)
+            return try publishImports(staged, choices: choices)
         } catch {
             for entry in staged { try? FileManager.default.removeItem(at: blob(entry.id)) }
             throw error

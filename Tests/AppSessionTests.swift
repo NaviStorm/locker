@@ -122,6 +122,267 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(afterChange, contents)
     }
 
+    @Observable fileprivate final class ReaderPresentation {
+        var expanded = false
+        var unlocked = true
+    }
+
+    @MainActor func testFullScreenReaderKeepsPDFPageAndClosesWithVault() async throws {
+        let state = ReaderPresentation()
+        let data = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 240, height: 400))
+            .pdfData { renderer in
+                for index in 1...4 {
+                    renderer.beginPage()
+                    ("Page " + String(index) as NSString).draw(at: CGPoint(x: 10, y: 10), withAttributes: nil)
+                }
+            }
+        struct Fixture: View {
+            @Bindable var state: ReaderPresentation
+            let data: Data
+
+            var body: some View {
+                if state.unlocked {
+                    HStack(spacing: 0) {
+                        Color.gray.frame(width: 110)
+                        ExpandableDocumentReader(expanded: $state.expanded) {
+                            DocumentPreview(data: data, name: "Exemple.pdf")
+                        }
+                    }
+                } else { Text("Coffre verrouillé") }
+            }
+        }
+
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let fixture = UIHostingController(rootView: Fixture(state: state, data: data))
+        fixture.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(fixture, animated: false) { done.resume() } }
+        defer { fixture.dismiss(animated: false) }
+
+        func pdf(in view: UIView) -> PDFView? {
+            if let pdf = view as? PDFView { return pdf }
+            return view.subviews.lazy.compactMap { pdf(in: $0) }.first
+        }
+
+        func waitFor(line: Int = #line, _ condition: () -> Bool) async throws {
+            for _ in 0..<60 {
+                if condition() { return }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            throw TransportError(message: "Transition du lecteur PDF inachevée à la ligne \(line).")
+        }
+
+        try await waitFor { pdf(in: fixture.view)?.document != nil }
+        let original = try XCTUnwrap(pdf(in: fixture.view))
+        let page = try XCTUnwrap(original.document?.page(at: 2))
+        original.go(to: page)
+        let initialWidth = original.bounds.width
+        state.expanded = true
+        try await waitFor {
+            guard let modal = fixture.presentedViewController else { return false }
+            return pdf(in: modal.view) === original && original.bounds.width > initialWidth + 50
+        }
+        XCTAssertTrue(original.currentPage === page)
+        state.expanded = false
+        try await waitFor { fixture.presentedViewController == nil && pdf(in: fixture.view) === original }
+        XCTAssertTrue(original.currentPage === page)
+        state.expanded = true
+        try await waitFor { fixture.presentedViewController != nil }
+        state.unlocked = false
+        try await waitFor { fixture.presentedViewController == nil && pdf(in: fixture.view) == nil }
+        // The watermark preview is inserted with full screen already requested.
+        state.unlocked = true
+        try await waitFor {
+            guard let modal = fixture.presentedViewController, let reader = pdf(in: modal.view) else { return false }
+            return reader.bounds.width > initialWidth + 50
+        }
+        state.expanded = false
+        try await waitFor { fixture.presentedViewController == nil && pdf(in: fixture.view) != nil }
+    }
+
+    @MainActor func testDuoFinderPlacesRootDocumentsBesideFolders() async throws {
+        guard #available(iOS 27.1, *) else { throw XCTSkip("Nécessite iOS 27.1.") }
+        let model = LockerModel(base: location("bibliotheque"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        let folder = try await store.createFolder("Factures")
+        _ = try await store.importData(Data([1]), name: "Exemple.txt")
+        _ = try await store.importData(Data([2]), name: "Archive.txt", folder: folder)
+        model.store = store
+        model.library = try await store.library()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func screen(_ posture: DuoPosture) -> some View {
+            GeometryReader { geometry in
+                LibraryScreen(model: model)
+                    .environment(\.duoPosture, posture).defaultAppStorage(defaults)
+                    .frame(width: 820, height: 510)
+                    .scaleEffect(min(1, geometry.size.width / 820, geometry.size.height / 510))
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            }
+        }
+        let host = UIHostingController(rootView: screen(.open))
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+        for posture in [DuoPosture.open, .folded] {
+            defaults.set(posture == .folded, forKey: "libraryShowsThumbnails")
+            host.rootView = screen(posture)
+            try await Task.sleep(for: .milliseconds(500))
+            let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = posture == .open ? "Bibliothèque ouverte" : "Bibliothèque partiellement ouverte"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            let request = VNRecognizeTextRequest()
+            request.recognitionLanguages = ["fr-FR"]
+            try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+            let words = (request.results ?? []).map { observation in
+                (string: observation.topCandidates(1).first?.string ?? "", boundingBox: observation.boundingBox)
+            }
+            let left = try XCTUnwrap(words.first { $0.string.localizedStandardContains("Factures") && $0.boundingBox.midX < 0.5 })
+            let right = try XCTUnwrap(words.first { $0.string.localizedStandardContains("Exemple") })
+            XCTAssertLessThan(left.boundingBox.maxX, right.boundingBox.minX)
+            XCTAssertFalse(words.contains { $0.string.localizedStandardContains("Archive.txt") })
+        }
+    }
+
+    @MainActor func testDuoFolderNavigationAcrossOpenPostures() async throws {
+        guard #available(iOS 27.1, *) else { throw XCTSkip("Nécessite iOS 27.1.") }
+        XCTAssertEqual(DuoPosture(.fullyOpen), .open)
+        XCTAssertEqual(DuoPosture(.partiallyOpen), .folded)
+        XCTAssertEqual(DuoPosture(.closed), .compact)
+        XCTAssertEqual(DuoPosture(nil), .compact)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let model = LockerModel(base: location("navigation"))
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        let parent = try await store.createFolder("Administration")
+        let child = try await store.createFolder("Courriers", in: parent)
+        _ = try await store.importData(Data("Texte fictif".utf8), name: "Lettre.txt", folder: child)
+        _ = try await store.importData(Data([42]), name: "Notice.txt")
+        model.store = store
+        model.library = try await store.library()
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func screen(_ posture: DuoPosture) -> some View {
+            LibraryScreen(model: model).defaultAppStorage(defaults).environment(\.duoPosture, posture)
+        }
+        let host = UIHostingController(rootView: screen(.open))
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+        func tap(_ label: String) async throws {
+            let control = try await button(label, in: host)
+            if let button = control as? UIControl { button.sendActions(for: .primaryActionTriggered) }
+            else { XCTAssertTrue(control.accessibilityActivate(), label) }
+        }
+        try await tap("Déplier Administration")
+        try await tap("Courriers")
+        _ = try await button("Lettre.txt", in: host)
+        host.rootView = screen(.folded)
+        let sidebar = try await button("Replier Administration", in: host)
+        let document = try await button("Lettre.txt", in: host)
+        XCTAssertLessThan(sidebar.accessibilityFrame.midX, document.accessibilityFrame.minX)
+        let capture = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: capture)
+        attachment.name = "Bibliothèque en colonnes"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        try await tap("Lettre.txt")
+        _ = try await button("Actions", in: host)
+        try await tap(model.vaultTitle)
+        _ = try await button("Notice.txt", in: host)
+        host.rootView = screen(.compact)
+        _ = try await button("Notice.txt", in: host)
+    }
+
+    @MainActor func testWelcomeControlsRespectTheFoldAndReturnToStandardLayout() async throws {
+        struct WelcomeFixture: View {
+            let folded: Bool
+            let record: (CGRect) -> Void
+            var body: some View {
+                GeometryReader { display in
+                    VaultWelcomeLayout(partiallyOpen: folded, showCompactCover: true) {
+                        VStack(alignment: .leading) {
+                            UnlockSecretField(method: .numericCode, text: .constant(""))
+                            Button("Ouvrir le coffre") {}.buttonStyle(.borderedProminent)
+                        }
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("accueil")) } action: { record($0) }
+                    }
+                    .coordinateSpace(name: "accueil")
+                    .frame(width: 800, height: 450)
+                    .scaleEffect(min(1, display.size.width / 800, display.size.height / 450))
+                    .position(x: display.size.width / 2, y: display.size.height / 2)
+                }
+            }
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        var bounds = CGRect.zero
+        let host = UIHostingController(rootView: WelcomeFixture(folded: false) { bounds = $0 })
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { host.dismiss(animated: false) }
+        var original: CGRect?
+        for folded in [false, true, false] {
+            host.rootView = WelcomeFixture(folded: folded) { bounds = $0 }
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertGreaterThan(bounds.width, 100)
+            if folded {
+                XCTAssertGreaterThanOrEqual(bounds.minX, 400)
+                XCTAssertLessThanOrEqual(bounds.maxX, 800)
+            } else if let original {
+                XCTAssertEqual(bounds, original)
+            } else {
+                XCTAssertLessThan(bounds.minX, 400)
+                original = bounds
+            }
+            let capture = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: capture)
+            attachment.name = folded ? "Accueil partiellement replié" : "Accueil ouvert"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
+    @MainActor func testUnlockFieldShowsItsLabelBeforeAndDuringEntry() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        for method in [VaultAuthenticationMethod.numericCode, .vaultPassword] {
+            let host = UIHostingController(rootView: UnlockSecretField(method: method, text: .constant(""))
+                .padding().frame(width: 295))
+            await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+            for value in ["", "1234567890"] {
+                host.rootView = UnlockSecretField(method: method, text: .constant(value)).padding().frame(width: 295)
+                try await Task.sleep(for: .milliseconds(125))
+                let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                }
+                let request = VNRecognizeTextRequest()
+                request.recognitionLanguages = ["fr-FR"]
+                try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+                let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                XCTAssertTrue(lines.localizedStandardContains(method.secretTitle), lines)
+                if value.isEmpty {
+                    XCTAssertTrue(lines.localizedStandardContains("Saisissez votre"), lines)
+                } else {
+                    XCTAssertFalse(lines.contains(value))
+                }
+            }
+            await withCheckedContinuation { done in host.dismiss(animated: false) { done.resume() } }
+        }
+    }
+
     @MainActor func testBackupSelectionShowsVerificationSuccessAndErrors() async throws {
         let keys = VaultKeys()
         let source = try VaultStore(root: location("source"), keys: keys, create: true)
@@ -295,6 +556,115 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertTrue(device.requiresAuthentication())
         let afterRecovery = try await repaired.preview(doc)
         XCTAssertEqual(afterRecovery, data)
+    }
+
+    @MainActor func testWatermarkReaderUsesNativeToolbarOnDuo() async throws {
+        guard #available(iOS 27.1, *) else { throw XCTSkip("Nécessite iOS 27.1.") }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let presenter = try XCTUnwrap(scene.keyWindow?.rootViewController)
+        let data = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 300, height: 400)).pdfData {
+            $0.beginPage()
+            ("Document fictif" as NSString).draw(at: CGPoint(x: 40, y: 45), withAttributes: nil)
+        }
+        let store = try VaultStore(root: location("filigrane"), keys: VaultKeys(), create: true)
+        _ = try await store.importData(data, name: "Exemple.pdf")
+        let documents = try await store.list()
+        let item = try XCTUnwrap(documents.first)
+        let state = ReaderPresentation()
+        var closed = false
+        let host = UIHostingController(rootView: Color.clear
+            .fullScreenCover(isPresented: Binding(get: { state.expanded }, set: { state.expanded = $0 })) {
+                WatermarkScreen(store: store, item: item)
+                    .onHingeChange { _, context in closed = context.hinge?.status == .closed }
+            })
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { done in presenter.present(host, animated: false) { done.resume() } }
+        defer { presenter.dismiss(animated: false) }
+        state.expanded = true
+
+        func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(descendants) }
+        func activate(_ label: String) async throws {
+            let element = try await button(label, in: host)
+            if let control = element as? UIControl { control.sendActions(for: .primaryActionTriggered) }
+            else { XCTAssertTrue(element.accessibilityActivate(), label) }
+        }
+        func input() async throws -> UIView {
+            for _ in 0..<40 {
+                if let modal = host.presentedViewController,
+                   let field = descendants(modal.view).first(where: { $0 is UITextView || $0 is UITextField }) {
+                    return field
+                }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            throw TransportError(message: "Champ du filigrane absent")
+        }
+        let field = try await input()
+        _ = field.becomeFirstResponder()
+        (field as? UIKeyInput)?.insertText("Usage fictif")
+        _ = field.resignFirstResponder()
+        try await activate("Prévisualiser la copie")
+        _ = try await button("Imprimer", in: host)
+        _ = try await button("Partager", in: host)
+        let modal = try XCTUnwrap(host.presentedViewController)
+        XCTAssertTrue(descendants(modal.view).contains { $0 is PDFView })
+        XCTAssertNil(modal.presentedViewController)
+        let originalOrientation = scene.interfaceOrientation
+        func mask(_ orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
+            UIInterfaceOrientationMask(rawValue: 1 << orientation.rawValue)
+        }
+        defer {
+            if scene.interfaceOrientation != originalOrientation {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask(originalOrientation)))
+            }
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        let orientations: [UIInterfaceOrientation] = closed ? [.portrait, .landscapeLeft, .landscapeRight] : [originalOrientation]
+        var sides = Set<Bool>()
+        for orientation in orientations {
+            if scene.interfaceOrientation != orientation {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask(orientation))) { error in XCTFail(error.localizedDescription) }
+            }
+            var located = false
+            for _ in 0..<50 {
+                try await Task.sleep(for: .milliseconds(75))
+                guard scene.interfaceOrientation == orientation else { continue }
+                let root = host.view.window ?? host.view!
+                // Native toolbar buttons can contain another UIControl; measure only the innermost one.
+                let controls = descendants(root).filter { view in
+                    view is UIControl && !view.isHidden && view.alpha > 0 && view.window != nil
+                        && !view.subviews.contains { descendants($0).contains { $0 is UIControl } }
+                }
+                let frames = controls.map { $0.convert($0.bounds, to: root) }
+                    .filter { $0.width > 10 && $0.height > 10 && root.bounds.contains(CGPoint(x: $0.midX, y: $0.midY)) }
+                guard frames.count == 3 else { continue }
+                if closed {
+                    let right = frames[0].midX > root.bounds.midX
+                    guard frames.allSatisfy({ ($0.midX > root.bounds.midX) == right
+                        && min($0.midX, root.bounds.width - $0.midX) < 60 }),
+                        (frames.map(\.midY).max() ?? 0) - (frames.map(\.midY).min() ?? 0) > 60 else { continue }
+                    sides.insert(right)
+                }
+                let capture = XCTAttachment(image: UIGraphicsImageRenderer(bounds: root.bounds).image { _ in
+                    root.drawHierarchy(in: root.bounds, afterScreenUpdates: true)
+                })
+                capture.name = "Commandes du filigrane – orientation " + String(orientation.rawValue)
+                capture.lifetime = .keepAlways
+                add(capture)
+                located = true
+                break
+            }
+            XCTAssertTrue(located, "Disposition native absente, orientation demandée \(orientation.rawValue), obtenue \(scene.interfaceOrientation.rawValue), fermé \(closed)")
+        }
+        if closed { XCTAssertEqual(sides.count, 2, "La barre doit suivre le bord système après rotation.") }
+        try await activate("Retour")
+        let edited = try await input()
+        XCTAssertEqual((edited as? UITextView)?.text ?? (edited as? UITextField)?.text, "Usage fictif")
+        try await activate(closed ? "Retour" : "Fermer")
+        for _ in 0..<40 where host.presentedViewController != nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(host.presentedViewController)
+
     }
 
     @MainActor func testClosedDuoReturnButtons() async throws {
@@ -605,6 +975,11 @@ final class AppSessionTests: VaultTestCase {
         XCTAssertEqual(model.library.documents(in: "Archives").map(\.labels.name), ["note.txt"])
         XCTAssertTrue(model.library.documents(in: "").isEmpty)
         model.importArchive(files, inNewVault: false, folder: "", extract: true)
+        for name in ["test.txt", "note.txt"] {
+            for _ in 0..<200 where model.duplicateImport == nil { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertEqual(model.duplicateImport?.existing.name, name)
+            model.resolveDuplicate(.keepBoth)
+        }
         try await settle { model.documents.count == 4 }
         XCTAssertEqual(model.library.documents(in: "").map(\.labels.name), ["note.txt"])
         model.importArchive(files, inNewVault: false, folder: "Archives", extract: false)

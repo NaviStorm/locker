@@ -8,7 +8,7 @@ struct LockerApp: App {
         Window("Locker", id: "locker") { RootScreen(model: model).frame(minWidth: 480, minHeight: 460) }
             .defaultSize(width: 900, height: 650)
         #else
-        WindowGroup { RootScreen(model: model) }
+        WindowGroup { RootScreen(model: model).modifier(DuoPostureReader()) }
         #endif
     }
 }
@@ -20,31 +20,19 @@ struct RootScreen: View {
     @State private var unlockSecret = ""
     @State private var protectNewKey = true
     @State private var recovering = false
+    #if os(iOS)
+    @Environment(\.duoPosture) private var duoPosture
+    private var partiallyOpen: Bool { duoPosture == .folded }
+    #else
+    private let partiallyOpen = false
+    #endif
 
     var body: some View {
         Group {
             if model.store != nil {
                 LibraryScreen(model: model)
             } else {
-                GeometryReader { geometry in
-                    let wide = geometry.size.width >= 740
-                    ScrollView {
-                        let layout = wide ? AnyLayout(HStackLayout(spacing: 26)) : AnyLayout(VStackLayout(spacing: 20))
-                        layout {
-                            LockerCover(compact: !wide)
-                                .frame(maxWidth: wide ? 250 : .infinity)
-                                .frame(height: wide ? 276 : nil)
-                            accessControls
-                        }
-                        .padding(14)
-                        .frame(maxWidth: wide ? 800 : 440)
-                        .background(.background, in: RoundedRectangle(cornerRadius: 28))
-                        .overlay { RoundedRectangle(cornerRadius: 28).strokeBorder(.primary.opacity(0.07)) }
-                        .padding(wide ? 32 : 16)
-                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
-                    }
-                    .background(Color.lockerCanvas)
-                }
+                welcome
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -85,6 +73,13 @@ struct RootScreen: View {
         } message: { Text(model.problem ?? "") }
     }
 
+    private var welcome: some View {
+        VaultWelcomeLayout(partiallyOpen: partiallyOpen,
+                          showCompactCover: !model.authenticationMethod.isCustom || recovering) {
+            accessControls
+        }
+    }
+
     private func unlockSelected(after: (() -> Void)? = nil) {
         let mode: AccessMode = model.authenticationMethod.isCustom ? .unlockWithSecret(unlockSecret) : .unlock
         unlockSecret = ""
@@ -100,7 +95,7 @@ struct RootScreen: View {
                     }
                 }
                 if model.authenticationMethod.isCustom {
-                    VaultSecretField(title: model.authenticationMethod.secretTitle, method: model.authenticationMethod, text: $unlockSecret)
+                    UnlockSecretField(method: model.authenticationMethod, text: $unlockSecret)
                 }
                 Button {
                     unlockSelected()
@@ -167,6 +162,107 @@ struct RootScreen: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .disabled(model.opening || model.removingVault)
+    }
+}
+
+struct VaultWelcomeLayout<Controls: View>: View {
+    let partiallyOpen: Bool
+    let showCompactCover: Bool
+    @ViewBuilder let controls: () -> Controls
+
+    var body: some View {
+        GeometryReader { geometry in
+            #if os(iOS)
+            if #available(iOS 27.1, *), partiallyOpen {
+                folded(geometry)
+            } else { standard(geometry) }
+            #else
+            standard(geometry)
+            #endif
+        }
+        .background(Color.lockerCanvas)
+    }
+
+    #if os(iOS)
+    @available(iOS 27.1, *)
+    private func folded(_ geometry: GeometryProxy) -> some View {
+        let width = geometry.size.width
+        let (left, rightStart) = geometry.duoColumnEdges
+        return HStack(spacing: rightStart - left) {
+            Image("LockerMark")
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 140, maxHeight: 140)
+                .clipShape(RoundedRectangle(cornerRadius: 28))
+                .padding()
+                .frame(width: left)
+                .accessibilityLabel("Locker")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Locker")
+                        .font(.system(.title, design: .rounded, weight: .bold))
+                        .padding([.horizontal, .top], 12)
+                    controls()
+                }
+                .padding(8)
+                .background(.background, in: RoundedRectangle(cornerRadius: 20))
+                .padding(12)
+                .frame(maxWidth: 480, minHeight: geometry.size.height)
+                .frame(maxWidth: .infinity)
+            }
+            .frame(width: width - rightStart)
+        }
+    }
+    #endif
+
+    private func standard(_ geometry: GeometryProxy) -> some View {
+        let wide = geometry.size.width >= 740
+        return ScrollView {
+            let layout = wide ? AnyLayout(HStackLayout(spacing: 26)) : AnyLayout(VStackLayout(spacing: 20))
+            layout {
+                if wide || geometry.size.height >= 440 || showCompactCover {
+                    LockerCover(compact: !wide)
+                        .frame(maxWidth: wide ? 250 : .infinity)
+                        .frame(height: wide ? 276 : nil)
+                }
+                controls()
+            }
+            .padding(14)
+            .frame(maxWidth: wide ? 800 : 440)
+            .background(.background, in: RoundedRectangle(cornerRadius: 28))
+            .overlay { RoundedRectangle(cornerRadius: 28).strokeBorder(.primary.opacity(0.07)) }
+            .padding(wide ? 32 : 16)
+            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+        }
+    }
+}
+
+struct UnlockSecretField: View {
+    let method: VaultAuthenticationMethod
+    @Binding var text: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(method.secretTitle)
+                .font(.headline)
+                .accessibilityHidden(true)
+            VaultSecretField(title: method == .numericCode ? "Saisissez votre code" : "Saisissez votre mot de passe",
+                             method: method, text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .accessibilityLabel(method.secretTitle)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(.background, in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(focused ? Color.accentColor : .secondary, lineWidth: focused ? 2 : 1)
+                        .allowsHitTesting(false)
+                }
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { focused = true })
+        }
     }
 }
 

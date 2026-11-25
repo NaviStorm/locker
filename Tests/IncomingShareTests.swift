@@ -68,6 +68,34 @@ final class IncomingShareTests: VaultTestCase {
         XCTAssertEqual(result, bytes)
     }
 
+    func testSharedFileWithNewNameOffersTheExistingDocument() async throws {
+        let inbox = ShareInbox(root: location("inbox"))
+        try VaultFiles.directory(inbox.root)
+        let key = Curve25519.KeyAgreement.PrivateKey()
+        try key.publicKey.rawRepresentation.write(to: inbox.recipient)
+        let writer = try ShareInbox.Writer(inbox)
+        let original = Data("Document partagé fictif".utf8)
+        var payload = original
+        let received = try writer.store(name: "Depuis Mail.txt") { defer { payload.removeAll() }; return payload }
+        try writer.finish([received])
+        let store = try VaultStore(root: location("coffre"), keys: VaultKeys(), create: true)
+        let folder = try await store.createFolder("Factures")
+        let existing = try await store.importData(original, name: "Déjà rangé.txt", folder: folder)
+        do {
+            try await store.receive(writer.id, from: inbox, privateKey: key, folder: "")
+            XCTFail("Doublon attendu")
+        } catch let duplicate as DuplicateImport {
+            XCTAssertEqual(duplicate.existing.folder, folder)
+            XCTAssertEqual(try inbox.pending(), [writer.id])
+            let open = try await store.receive(writer.id, from: inbox, privateKey: key, folder: "",
+                                               choices: [duplicate.id: .openExisting])
+            XCTAssertEqual(open, existing)
+            XCTAssertTrue(try inbox.pending().isEmpty)
+            let docs = try await store.list()
+            XCTAssertEqual(docs.map(\.id), [existing])
+        }
+    }
+
     func testDamagedSecondFileRollsBackEntireBatch() async throws {
         let inbox = ShareInbox(root: location("inbox"))
         try VaultFiles.directory(inbox.root)

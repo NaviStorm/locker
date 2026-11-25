@@ -109,6 +109,20 @@ actor PagedPDF {
         pages = doc.numberOfPages
     }
 
+    func hasAnnotations(on number: Int) throws -> Bool {
+        try source.gate.check()
+        guard let page = document.page(at: number), let dictionary = page.dictionary else { throw VaultError.damaged }
+        var annotations: CGPDFArrayRef?
+        return CGPDFDictionaryGetArray(dictionary, "Annots", &annotations) && annotations.map { CGPDFArrayGetCount($0) > 0 } == true
+    }
+
+    func pageSize(_ number: Int) throws -> CGSize {
+        try source.gate.check()
+        guard let page = document.page(at: number) else { throw VaultError.unavailable }
+        let size = page.getBoxRect(.cropBox).size
+        return abs(page.rotationAngle % 180) == 90 ? CGSize(width: size.height, height: size.width) : size
+    }
+
     func render(_ number: Int) throws -> CGImage {
         try source.gate.check()
         guard let page = document.page(at: number) else { throw VaultError.unavailable }
@@ -124,7 +138,12 @@ actor PagedPDF {
         let bounds = CGRect(x: 0, y: 0, width: width, height: height)
         context.setFillColor(gray: 1, alpha: 1)
         context.fill(bounds)
-        context.concatenate(page.getDrawingTransform(.cropBox, rect: bounds, rotate: 0, preserveAspectRatio: true))
+        // CGPDFPage's fitting transform only scales down. Map page points to bitmap
+        // pixels separately so an A4 page fills the raster at resolutions above 72 dpi.
+        let pageSize = CGSize(width: rotated ? box.height : box.width, height: rotated ? box.width : box.height)
+        context.scaleBy(x: bounds.width / pageSize.width, y: bounds.height / pageSize.height)
+        context.concatenate(page.getDrawingTransform(.cropBox, rect: CGRect(origin: .zero, size: pageSize),
+                                                     rotate: 0, preserveAspectRatio: true))
         context.drawPDFPage(page)
         try source.gate.check()
         guard !source.failed, let image = context.makeImage() else { throw VaultError.damaged }

@@ -179,7 +179,7 @@ actor VaultStore {
         importedShares = state.importedShares
         // A crash can leave encrypted content without a committed catalogue reference.
         for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            where file.pathExtension == "blob" {
+            where ["blob", "search"].contains(file.pathExtension) {
             if let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent), entries[id]?.document == nil {
                 try FileManager.default.removeItem(at: file)
             }
@@ -245,6 +245,9 @@ actor VaultStore {
                 VaultKind(catalog.family, keys: keys).cache(in: root)
             }
             family = catalog.family
+            for (id, prior) in entries where prior.document != nil && catalog.entries[id]?.document == nil {
+                try? FileManager.default.removeItem(at: blob(id).deletingPathExtension().appendingPathExtension("search"))
+            }
             entries = catalog.entries
             pending = catalog.pending
             joinDraft = catalog.joinDraft

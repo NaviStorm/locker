@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct DocumentTile: View {
     let item: ListedDocument
     let store: VaultStore?
+    var showsFolder = false
     @State private var thumbnail: CGImage?
 
     var body: some View {
@@ -21,6 +22,9 @@ struct DocumentTile: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             Text(item.labels.name).font(.callout.weight(.medium)).lineLimit(2, reservesSpace: true)
+            if showsFolder && !item.labels.folder.isEmpty {
+                Label(item.labels.folder, systemImage: "folder").font(.caption).lineLimit(1)
+            }
             Text(item.size.formatted(.byteCount(style: .file))).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
