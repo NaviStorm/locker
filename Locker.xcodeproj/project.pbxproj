@@ -1,73 +1,499 @@
 // !$*UTF8*$!
 {
-archiveVersion = 1;
-classes = {};
-objectVersion = 77;
-objects = {
-000000000000000000000051 = {
-            isa = PBXShellScriptBuildPhase;
-            alwaysOutOfDate = 1;
-            buildActionMask = 2147483647;
-            files = ();
-            inputPaths = ("$(SRCROOT)/Config/Share-Info.plist", "$(SRCROOT)/scripts/build-info.sh", "$(SRCROOT)/.git");
-            name = "Version Git";
-            outputPaths = ("$(DERIVED_FILE_DIR)/LockerShare-Info.plist");
-            runOnlyForDeploymentPostprocessing = 0;
-            shellPath = /bin/sh;
-            shellScript = "/bin/sh \"$SRCROOT/scripts/build-info.sh\"";
-        };
-000000000000000000000050 = {
-            isa = PBXShellScriptBuildPhase;
-            alwaysOutOfDate = 1;
-            buildActionMask = 2147483647;
-            files = ();
-            inputPaths = ("$(SRCROOT)/Config/Info.plist", "$(SRCROOT)/scripts/build-info.sh", "$(SRCROOT)/.git");
-            name = "Version Git";
-            outputPaths = ("$(DERIVED_FILE_DIR)/Locker-Info.plist");
-            runOnlyForDeploymentPostprocessing = 0;
-            shellPath = /bin/sh;
-            shellScript = "/bin/sh \"$SRCROOT/scripts/build-info.sh\"";
-        };
-000000000000000000000040 = { isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000046; buildPhases = (000000000000000000000051, 000000000000000000000043); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (000000000000000000000041, 000000000000000000000042); name = LockerShare; productName = LockerShare; productReference = 000000000000000000000044; productType = "com.apple.product-type.app-extension"; };
-000000000000000000000041 = { isa = PBXFileSystemSynchronizedRootGroup; path = ShareExtension; sourceTree = "<group>"; };
-000000000000000000000042 = { isa = PBXFileSystemSynchronizedRootGroup; path = ShareCommon; sourceTree = "<group>"; };
-000000000000000000000043 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-000000000000000000000044 = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LockerShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-000000000000000000000045 = { isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (000000000000000000000049); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
-000000000000000000000046 = { isa = XCConfigurationList; buildConfigurations = (000000000000000000000047, 000000000000000000000048); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-000000000000000000000047 = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = "Config/Share-iOS.entitlements"; "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Config/Share-macOS.entitlements"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = RTMWCLXVLL; REGISTER_APP_GROUPS = YES; "CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development"; ENABLE_HARDENED_RUNTIME = YES; MARKETING_VERSION = 1.0.0; USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/LockerShare-Info.plist"; PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents.share; PRODUCT_NAME = LockerShare; SKIP_INSTALL = YES; SUPPORTS_MACCATALYST = NO; }; name = Debug; };
-000000000000000000000048 = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = "Config/Share-iOS.entitlements"; "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Config/Share-macOS.entitlements"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = RTMWCLXVLL; REGISTER_APP_GROUPS = YES; "CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development"; ENABLE_HARDENED_RUNTIME = YES; MARKETING_VERSION = 1.0.0; USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/LockerShare-Info.plist"; PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents.share; PRODUCT_NAME = LockerShare; SKIP_INSTALL = YES; SUPPORTS_MACCATALYST = NO; }; name = Release; };
-000000000000000000000049 = { isa = PBXBuildFile; fileRef = 000000000000000000000044; settings = { ATTRIBUTES = (RemoveHeadersOnCopy); }; };
-00000000000000000000004A = { isa = PBXTargetDependency; target = 000000000000000000000040; targetProxy = 00000000000000000000004B; };
-00000000000000000000004B = { isa = PBXContainerItemProxy; containerPortal = 000000000000000000000001; proxyType = 1; remoteGlobalIDString = 000000000000000000000040; remoteInfo = LockerShare; };
-000000000000000000000001 = { isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2720; TargetAttributes = { 000000000000000000000002 = { SystemCapabilities = { com.apple.iCloud = { enabled = 1; }; }; }; }; }; buildConfigurationList = 000000000000000000000014; compatibilityVersion = "Xcode 16.0"; developmentRegion = fr; knownRegions = (fr, Base); mainGroup = 000000000000000000000004; productRefGroup = 000000000000000000000005; projectDirPath = ""; projectRoot = ""; targets = (000000000000000000000002, 000000000000000000000003, 000000000000000000000040); };
-000000000000000000000004 = { isa = PBXGroup; children = (000000000000000000000006, 000000000000000000000007, 000000000000000000000008, 000000000000000000000009, 000000000000000000000005, 000000000000000000000041, 000000000000000000000042); sourceTree = "<group>"; };
-000000000000000000000005 = { isa = PBXGroup; children = (00000000000000000000000A, 00000000000000000000000B, 000000000000000000000044); name = Produits; sourceTree = "<group>"; };
-000000000000000000000006 = { isa = PBXFileSystemSynchronizedRootGroup; path = App; sourceTree = "<group>"; };
-000000000000000000000007 = { isa = PBXFileSystemSynchronizedRootGroup; path = Core; sourceTree = "<group>"; };
-000000000000000000000008 = { isa = PBXFileSystemSynchronizedRootGroup; path = Tests; sourceTree = "<group>"; };
-000000000000000000000009 = { isa = PBXFileSystemSynchronizedRootGroup; path = Config; sourceTree = "<group>"; };
-00000000000000000000000A = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Locker.app; sourceTree = BUILT_PRODUCTS_DIR; };
-00000000000000000000000B = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LockerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-000000000000000000000002 = { isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000015; buildPhases = (000000000000000000000050, 00000000000000000000000C, 00000000000000000000000D, 00000000000000000000000E, 000000000000000000000045); buildRules = (); dependencies = (00000000000000000000004A); fileSystemSynchronizedGroups = (000000000000000000000006, 000000000000000000000007, 000000000000000000000042); name = Locker; productName = Locker; productReference = 00000000000000000000000A; productType = "com.apple.product-type.application"; };
-00000000000000000000000C = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-00000000000000000000000D = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-00000000000000000000000E = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-000000000000000000000003 = { isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000016; buildPhases = (00000000000000000000000F, 000000000000000000000010, 000000000000000000000011); buildRules = (); dependencies = (000000000000000000000012); fileSystemSynchronizedGroups = (000000000000000000000008); name = LockerTests; productName = LockerTests; productReference = 00000000000000000000000B; productType = "com.apple.product-type.bundle.unit-test"; };
-00000000000000000000000F = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-000000000000000000000010 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-000000000000000000000011 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-000000000000000000000012 = { isa = PBXTargetDependency; target = 000000000000000000000002; targetProxy = 000000000000000000000013; };
-000000000000000000000013 = { isa = PBXContainerItemProxy; containerPortal = 000000000000000000000001; proxyType = 1; remoteGlobalIDString = 000000000000000000000002; remoteInfo = Locker; };
-000000000000000000000014 = { isa = XCConfigurationList; buildConfigurations = (00000000000000000000001E, 00000000000000000000001F); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-000000000000000000000015 = { isa = XCConfigurationList; buildConfigurations = (000000000000000000000020, 000000000000000000000021); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-000000000000000000000016 = { isa = XCConfigurationList; buildConfigurations = (000000000000000000000022, 000000000000000000000023); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-00000000000000000000001E = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(SRCROOT)/Modules/CLockerArchive"); SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 17.4; MACOSX_DEPLOYMENT_TARGET = 14.4; SDKROOT = auto; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"; TARGETED_DEVICE_FAMILY = "1,2"; ENABLE_USER_SCRIPT_SANDBOXING = YES; ENABLE_TESTABILITY = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; }; name = Debug; };
-00000000000000000000001F = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(SRCROOT)/Modules/CLockerArchive"); SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 17.4; MACOSX_DEPLOYMENT_TARGET = 14.4; SDKROOT = auto; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"; TARGETED_DEVICE_FAMILY = "1,2"; ENABLE_USER_SCRIPT_SANDBOXING = YES; SWIFT_COMPILATION_MODE = wholemodule; }; name = Release; };
-000000000000000000000020 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/Locker-Info.plist"; INFOPLIST_KEY_CFBundleDisplayName = Locker; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity"; "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES; "INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = NO; CODE_SIGN_ENTITLEMENTS = Config/iOS.entitlements; "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Config/macOS.entitlements; ENABLE_HARDENED_RUNTIME = YES; PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents; MARKETING_VERSION = 1.0.0; USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES; PRODUCT_NAME = Locker; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; "CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development"; DEVELOPMENT_TEAM = RTMWCLXVLL; REGISTER_APP_GROUPS = YES; SUPPORTS_MACCATALYST = NO; }; name = Debug; };
-000000000000000000000021 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/Locker-Info.plist"; INFOPLIST_KEY_CFBundleDisplayName = Locker; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity"; "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES; "INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = NO; CODE_SIGN_ENTITLEMENTS = Config/iOS.entitlements; "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Config/macOS.entitlements; ENABLE_HARDENED_RUNTIME = YES; PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents; MARKETING_VERSION = 1.0.0; USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES; PRODUCT_NAME = Locker; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; "CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development"; DEVELOPMENT_TEAM = RTMWCLXVLL; REGISTER_APP_GROUPS = YES; SUPPORTS_MACCATALYST = NO; }; name = Release; };
-000000000000000000000022 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = fr.locker.documents.tests; PRODUCT_NAME = LockerTests; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Locker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Locker"; BUNDLE_LOADER = "$(TEST_HOST)"; }; name = Debug; };
-000000000000000000000023 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = fr.locker.documents.tests; PRODUCT_NAME = LockerTests; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Locker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Locker"; BUNDLE_LOADER = "$(TEST_HOST)"; }; name = Release; };
-};
-rootObject = 000000000000000000000001;
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 71;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		000000000000000000000049 /* LockerShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 000000000000000000000044 /* LockerShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		000000000000000000000013 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000002;
+			remoteInfo = Locker;
+		};
+		00000000000000000000004B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000040;
+			remoteInfo = LockerShare;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		000000000000000000000045 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				000000000000000000000049 /* LockerShare.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		00000000000000000000000A /* Locker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Locker.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		00000000000000000000000B /* LockerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LockerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000044 /* LockerShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LockerShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		000000000000000000000006 /* App */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = App; sourceTree = "<group>"; };
+		000000000000000000000007 /* Core */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Core; sourceTree = "<group>"; };
+		000000000000000000000008 /* Tests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Tests; sourceTree = "<group>"; };
+		000000000000000000000009 /* Config */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Config; sourceTree = "<group>"; };
+		000000000000000000000041 /* ShareExtension */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = ShareExtension; sourceTree = "<group>"; };
+		000000000000000000000042 /* ShareCommon */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = ShareCommon; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		00000000000000000000000D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000010 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		000000000000000000000004 = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000006 /* App */,
+				000000000000000000000007 /* Core */,
+				000000000000000000000008 /* Tests */,
+				000000000000000000000009 /* Config */,
+				000000000000000000000005 /* Produits */,
+				000000000000000000000041 /* ShareExtension */,
+				000000000000000000000042 /* ShareCommon */,
+			);
+			sourceTree = "<group>";
+		};
+		000000000000000000000005 /* Produits */ = {
+			isa = PBXGroup;
+			children = (
+				00000000000000000000000A /* Locker.app */,
+				00000000000000000000000B /* LockerTests.xctest */,
+				000000000000000000000044 /* LockerShare.appex */,
+			);
+			name = Produits;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		000000000000000000000002 /* Locker */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000015 /* Build configuration list for PBXNativeTarget "Locker" */;
+			buildPhases = (
+				000000000000000000000050 /* Version Git */,
+				00000000000000000000000C /* Sources */,
+				00000000000000000000000D /* Frameworks */,
+				00000000000000000000000E /* Resources */,
+				000000000000000000000045 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				00000000000000000000004A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				000000000000000000000006 /* App */,
+				000000000000000000000007 /* Core */,
+				000000000000000000000042 /* ShareCommon */,
+			);
+			name = Locker;
+			productName = Locker;
+			productReference = 00000000000000000000000A /* Locker.app */;
+			productType = "com.apple.product-type.application";
+		};
+		000000000000000000000003 /* LockerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000016 /* Build configuration list for PBXNativeTarget "LockerTests" */;
+			buildPhases = (
+				00000000000000000000000F /* Sources */,
+				000000000000000000000010 /* Frameworks */,
+				000000000000000000000011 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				000000000000000000000012 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				000000000000000000000008 /* Tests */,
+			);
+			name = LockerTests;
+			productName = LockerTests;
+			productReference = 00000000000000000000000B /* LockerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		000000000000000000000040 /* LockerShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000046 /* Build configuration list for PBXNativeTarget "LockerShare" */;
+			buildPhases = (
+				000000000000000000000051 /* Version Git */,
+				000000000000000000000043 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				000000000000000000000041 /* ShareExtension */,
+				000000000000000000000042 /* ShareCommon */,
+			);
+			name = LockerShare;
+			productName = LockerShare;
+			productReference = 000000000000000000000044 /* LockerShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		000000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2720;
+				TargetAttributes = {
+					000000000000000000000002 = {
+						SystemCapabilities = {
+							com.apple.iCloud = {
+								enabled = 1;
+							};
+						};
+					};
+				};
+			};
+			buildConfigurationList = 000000000000000000000014 /* Build configuration list for PBXProject "Locker" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = fr;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				fr,
+				Base,
+			);
+			mainGroup = 000000000000000000000004;
+			productRefGroup = 000000000000000000000005 /* Produits */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				000000000000000000000002 /* Locker */,
+				000000000000000000000003 /* LockerTests */,
+				000000000000000000000040 /* LockerShare */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		00000000000000000000000E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000011 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		000000000000000000000050 /* Version Git */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Config/Info.plist",
+				"$(SRCROOT)/scripts/build-info.sh",
+				"$(SRCROOT)/.git",
+			);
+			name = "Version Git";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Locker-Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$SRCROOT/scripts/build-info.sh\"";
+		};
+		000000000000000000000051 /* Version Git */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Config/Share-Info.plist",
+				"$(SRCROOT)/scripts/build-info.sh",
+				"$(SRCROOT)/.git",
+			);
+			name = "Version Git";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/LockerShare-Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$SRCROOT/scripts/build-info.sh\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		00000000000000000000000C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		00000000000000000000000F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000043 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		000000000000000000000012 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000002 /* Locker */;
+			targetProxy = 000000000000000000000013 /* PBXContainerItemProxy */;
+		};
+		00000000000000000000004A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000040 /* LockerShare */;
+			targetProxy = 00000000000000000000004B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		00000000000000000000001E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.4;
+				MACOSX_DEPLOYMENT_TARGET = 14.4;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Modules/CLockerArchive";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		00000000000000000000001F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.4;
+				MACOSX_DEPLOYMENT_TARGET = 14.4;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Modules/CLockerArchive";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		000000000000000000000020 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/iOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Config/macOS.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = RTMWCLXVLL;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/Locker-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Locker;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = NO;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents;
+				PRODUCT_NAME = Locker;
+				REGISTER_APP_GROUPS = YES;
+				SUPPORTS_MACCATALYST = NO;
+				USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES;
+			};
+			name = Debug;
+		};
+		000000000000000000000021 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/iOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Config/macOS.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = RTMWCLXVLL;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/Locker-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Locker;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = NO;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents;
+				PRODUCT_NAME = Locker;
+				REGISTER_APP_GROUPS = YES;
+				SUPPORTS_MACCATALYST = NO;
+				USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES;
+			};
+			name = Release;
+		};
+		000000000000000000000022 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = fr.locker.documents.tests;
+				PRODUCT_NAME = LockerTests;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Locker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Locker";
+			};
+			name = Debug;
+		};
+		000000000000000000000023 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = fr.locker.documents.tests;
+				PRODUCT_NAME = LockerTests;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Locker.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Locker";
+			};
+			name = Release;
+		};
+		000000000000000000000047 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Config/Share-iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Config/Share-macOS.entitlements";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = RTMWCLXVLL;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/LockerShare-Info.plist";
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents.share;
+				PRODUCT_NAME = LockerShare;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = NO;
+				USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES;
+			};
+			name = Debug;
+		};
+		000000000000000000000048 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Config/Share-iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Config/Share-macOS.entitlements";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = RTMWCLXVLL;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/LockerShare-Info.plist";
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tandreuperouges.locker.documents.share;
+				PRODUCT_NAME = LockerShare;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = NO;
+				USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		000000000000000000000014 /* Build configuration list for PBXProject "Locker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				00000000000000000000001E /* Debug */,
+				00000000000000000000001F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000015 /* Build configuration list for PBXNativeTarget "Locker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000020 /* Debug */,
+				000000000000000000000021 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000016 /* Build configuration list for PBXNativeTarget "LockerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000022 /* Debug */,
+				000000000000000000000023 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000046 /* Build configuration list for PBXNativeTarget "LockerShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000047 /* Debug */,
+				000000000000000000000048 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 000000000000000000000001 /* Project object */;
 }
